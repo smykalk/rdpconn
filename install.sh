@@ -22,5 +22,9 @@ log "Script installed and made executable"
 
 log "Installing config to: $TARGET_CONFIG"
 mkdir -p "$CONFIG_HOME"
-cp "$CONFIG_SOURCE" "$TARGET_CONFIG"
-log "Config installed"
+if [ -e "$TARGET_CONFIG" ]; then
+    log "Config already exists, skipping copy"
+else
+    cp "$CONFIG_SOURCE" "$TARGET_CONFIG"
+    log "Config installed"
+fi
