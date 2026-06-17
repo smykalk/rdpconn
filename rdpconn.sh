@@ -213,8 +213,13 @@ select_server() {
     done
 
     local choice
-    PS3="Enter choice (1-${#labels[@]}): "
+    log_err "Enter 'e' to edit servers."
+    PS3="Enter choice (1-${#labels[@]}) or e to edit: "
     select choice in "${labels[@]}"; do
+        if [[ ${REPLY,,} == "e" ]]; then
+            printf '%s' "__EDIT__"
+            return
+        fi
         if [[ -n ${choice:-} ]]; then
             local index=$((REPLY - 1))
             log_err "Selected: '${labels[$index]}'"
@@ -472,7 +477,550 @@ start_rdp_session() {
     launch_freerdp_session "$client" args env_vars
 }
 
+require_user_config_for_edit() {
+    if [[ ! -f $CONFIG_FILE ]]; then
+        log "Error: Edit mode requires user config at '$CONFIG_FILE'. Run install first or create it from '$DEFAULT_CONFIG_FILE'."
+        return 1
+    fi
+}
+
+validate_edit_config() {
+    local missing=()
+
+    config_var_exists SERVERS || missing+=(SERVERS)
+    config_var_exists KWALLET || missing+=(KWALLET)
+    config_var_exists KWALLET_FOLDER || missing+=(KWALLET_FOLDER)
+
+    if ((${#missing[@]} > 0)); then
+        log "Error: Missing configuration variables: ${missing[*]}"
+        return 1
+    fi
+
+    local entry
+    local name
+    local url
+    local org_raw
+    local pers_raw
+    for entry in "${SERVERS[@]}"; do
+        if ! parse_server_entry "$entry" name url org_raw pers_raw; then
+            return 1
+        fi
+    done
+}
+
+server_entry() {
+    local name=$1
+    local url=$2
+    local up=$3
+    local down=$4
+
+    printf '%s|%s|%s|%s' "$name" "$url" "$up" "$down"
+}
+
+validate_server_field() {
+    local label=$1
+    local value=$2
+
+    if [[ -z $value ]]; then
+        log "Error: ${label} cannot be empty"
+        return 1
+    fi
+
+    if [[ $value == *"|"* ]]; then
+        log "Error: ${label} cannot contain '|'"
+        return 1
+    fi
+}
+
+normalize_vpn_field() {
+    local value
+    value=$(trim_ws "$1")
+
+    if [[ -z $value ]]; then
+        printf '%s' "*"
+    else
+        printf '%s' "$value"
+    fi
+}
+
+find_server_index_by_url() {
+    local target=$1
+    local entry
+    local name
+    local url
+    local org_raw
+    local pers_raw
+    local i
+
+    for i in "${!SERVERS[@]}"; do
+        entry=${SERVERS[$i]}
+        parse_server_entry "$entry" name url org_raw pers_raw || return 1
+        if [[ $url == "$target" ]]; then
+            printf '%s' "$i"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+server_url_exists_except() {
+    local target=$1
+    local except_index=$2
+    local entry
+    local name
+    local url
+    local org_raw
+    local pers_raw
+    local i
+
+    for i in "${!SERVERS[@]}"; do
+        if [[ $i == "$except_index" ]]; then
+            continue
+        fi
+        entry=${SERVERS[$i]}
+        parse_server_entry "$entry" name url org_raw pers_raw || return 1
+        if [[ $url == "$target" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+write_servers_config() {
+    local servers_var=$1
+    local -n servers_ref=$servers_var
+    local tmp="${CONFIG_FILE}.tmp.$$"
+    local line
+    local in_servers=0
+    local wrote=0
+    local entry
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        if ((in_servers)); then
+            if [[ $line == *")"* ]]; then
+                in_servers=0
+            fi
+            continue
+        fi
+
+        if [[ $line =~ ^[[:space:]]*SERVERS= ]]; then
+            printf 'SERVERS=(\n' >>"$tmp"
+            for entry in "${servers_ref[@]}"; do
+                printf '    "%s"\n' "$entry" >>"$tmp"
+            done
+            printf ')\n' >>"$tmp"
+            wrote=1
+            if [[ $line != *")"* ]]; then
+                in_servers=1
+            fi
+            continue
+        fi
+
+        printf '%s\n' "$line" >>"$tmp"
+    done <"$CONFIG_FILE"
+
+    if ((wrote == 0)); then
+        rm -f "$tmp"
+        log "Error: SERVERS block not found in '$CONFIG_FILE'"
+        return 1
+    fi
+
+    mv "$tmp" "$CONFIG_FILE"
+    SERVERS=("${servers_ref[@]}")
+}
+
+kwallet_open_handle() {
+    local appid=$1
+    qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.open "$KWALLET" 0 "$appid"
+}
+
+kwallet_has_entry() {
+    local key=$1
+    local appid="rdpconn"
+    local handle
+    local result
+
+    if ! command -v qdbus6 >/dev/null 2>&1; then
+        return 1
+    fi
+
+    handle=$(kwallet_open_handle "$appid") || return 1
+    result=$(qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.hasEntry "$handle" "$KWALLET_FOLDER" "$key" "$appid") || return 1
+    [[ $result == "true" ]]
+}
+
+kwallet_delete_entry() {
+    local key=$1
+    local appid="rdpconn"
+    local handle
+
+    if ! command -v qdbus6 >/dev/null 2>&1; then
+        log "Error: qdbus6 is required to remove credentials"
+        return 1
+    fi
+
+    handle=$(kwallet_open_handle "$appid") || return 1
+    qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.removeEntry "$handle" "$KWALLET_FOLDER" "$key" "$appid" >/dev/null
+    log "Removed credential for '$key'"
+}
+
+kwallet_write_python() {
+    local key=$1
+    local secret=$2
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! python3 -c 'import dbus' >/dev/null 2>&1; then
+        return 1
+    fi
+
+    printf '%s' "$secret" | python3 -c '
+import sys
+import dbus
+
+key, wallet, folder = sys.argv[1:4]
+secret = sys.stdin.read()
+appid = "rdpconn"
+bus = dbus.SessionBus()
+obj = bus.get_object("org.kde.kwalletd6", "/modules/kwalletd6")
+kwallet = dbus.Interface(obj, "org.kde.KWallet")
+handle = kwallet.open(wallet, 0, appid)
+if handle < 0:
+    raise SystemExit(f"failed to open wallet: {handle}")
+if not kwallet.hasFolder(handle, folder, appid):
+    kwallet.createFolder(handle, folder, appid)
+rc = kwallet.writePassword(handle, folder, key, secret, appid)
+if rc != 0:
+    raise SystemExit(f"writePassword failed: {rc}")
+if not kwallet.hasEntry(handle, folder, key, appid):
+    raise SystemExit("entry was not created")
+' "$key" "$KWALLET" "$KWALLET_FOLDER"
+}
+
+kwallet_write_qdbus() {
+    local key=$1
+    local secret=$2
+    local appid="rdpconn"
+    local handle
+    local result
+
+    if ! command -v qdbus6 >/dev/null 2>&1; then
+        log "Error: qdbus6 is required for fallback credential writes"
+        return 1
+    fi
+
+    log "Warning: Python DBus unavailable; falling back to qdbus6. Secret may be visible in process arguments briefly."
+    handle=$(kwallet_open_handle "$appid") || return 1
+    result=$(qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.writePassword "$handle" "$KWALLET_FOLDER" "$key" "$secret" "$appid") || return 1
+    if [[ $result != 0 ]]; then
+        log "Error: writePassword failed: $result"
+        return 1
+    fi
+}
+
+prompt_credential_secret() {
+    local -n out=$1
+
+    read -r -s -p "Enter username:password: " out
+    printf '\n'
+
+    if [[ -z $out || $out != *:* ]]; then
+        log "Error: credential must be in 'username:password' format"
+        return 1
+    fi
+}
+
+set_credential_for_url() {
+    local url=$1
+    local secret
+
+    prompt_credential_secret secret || return 1
+
+    if kwallet_write_python "$url" "$secret"; then
+        log "Saved credential for '$url'"
+        return 0
+    fi
+
+    kwallet_write_qdbus "$url" "$secret" || return 1
+    log "Saved credential for '$url'"
+}
+
+print_server_list() {
+    local stream=${1:-stdout}
+    local entry
+    local name
+    local url
+    local org_raw
+    local pers_raw
+    local status
+    local i=1
+
+    for entry in "${SERVERS[@]}"; do
+        parse_server_entry "$entry" name url org_raw pers_raw || return 1
+        if kwallet_has_entry "$url"; then
+            status="present"
+        else
+            status="missing"
+        fi
+        if [[ $stream == "stderr" ]]; then
+            log_err "${i}) ${name} (${url}) credential: ${status} up: ${org_raw} down: ${pers_raw}"
+        else
+            log "${i}) ${name} (${url}) credential: ${status} up: ${org_raw} down: ${pers_raw}"
+        fi
+        ((i++))
+    done
+}
+
+select_server_index() {
+    local choice
+
+    print_server_list stderr
+    read -r -p "Enter choice: " choice
+    if [[ ! $choice =~ ^[0-9]+$ || $choice -lt 1 || $choice -gt ${#SERVERS[@]} ]]; then
+        log_err "Error: Invalid choice"
+        return 1
+    fi
+
+    printf '%s' "$((choice - 1))"
+}
+
+edit_add_server() {
+    local name
+    local url
+    local up
+    local down
+    local set_cred
+    local -a new_servers=("${SERVERS[@]}")
+
+    read -r -p "Name: " name
+    read -r -p "URL: " url
+    read -r -p "UP_VPNS [*]: " up
+    read -r -p "DOWN_VPNS [*]: " down
+
+    name=$(trim_ws "$name")
+    url=$(trim_ws "$url")
+    up=$(normalize_vpn_field "$up")
+    down=$(normalize_vpn_field "$down")
+
+    validate_server_field "Name" "$name" || return 1
+    validate_server_field "URL" "$url" || return 1
+
+    if server_url_exists_except "$url" "-1"; then
+        log "Error: Server URL '$url' already exists"
+        return 1
+    fi
+
+    new_servers+=("$(server_entry "$name" "$url" "$up" "$down")")
+    write_servers_config new_servers || return 1
+    log "Added server '$name ($url)'"
+
+    read -r -p "Set credential now? [y/N]: " set_cred
+    if [[ ${set_cred,,} == "y" ]]; then
+        set_credential_for_url "$url"
+    fi
+}
+
+edit_update_server() {
+    local index
+    local entry
+    local old_name
+    local old_url
+    local old_up
+    local old_down
+    local name
+    local url
+    local up
+    local down
+    local -a new_servers=("${SERVERS[@]}")
+
+    index=$(select_server_index) || return 1
+    entry=${SERVERS[$index]}
+    parse_server_entry "$entry" old_name old_url old_up old_down || return 1
+
+    read -r -p "Name [$old_name]: " name
+    read -r -p "URL [$old_url]: " url
+    read -r -p "UP_VPNS [$old_up]: " up
+    read -r -p "DOWN_VPNS [$old_down]: " down
+
+    name=$(trim_ws "${name:-$old_name}")
+    url=$(trim_ws "${url:-$old_url}")
+    up=$(trim_ws "${up:-$old_up}")
+    down=$(trim_ws "${down:-$old_down}")
+
+    validate_server_field "Name" "$name" || return 1
+    validate_server_field "URL" "$url" || return 1
+
+    if server_url_exists_except "$url" "$index"; then
+        log "Error: Server URL '$url' already exists"
+        return 1
+    fi
+
+    new_servers[$index]="$(server_entry "$name" "$url" "$up" "$down")"
+    write_servers_config new_servers || return 1
+    log "Updated server '$name ($url)'"
+}
+
+edit_delete_server() {
+    local index
+    local entry
+    local name
+    local url
+    local up
+    local down
+    local confirm
+    local delete_cred
+    local -a new_servers=()
+    local i
+
+    index=$(select_server_index) || return 1
+    entry=${SERVERS[$index]}
+    parse_server_entry "$entry" name url up down || return 1
+
+    read -r -p "Delete server '$name ($url)'? [y/N]: " confirm
+    if [[ ${confirm,,} != "y" ]]; then
+        log "Delete cancelled"
+        return 0
+    fi
+
+    for i in "${!SERVERS[@]}"; do
+        if [[ $i != "$index" ]]; then
+            new_servers+=("${SERVERS[$i]}")
+        fi
+    done
+
+    write_servers_config new_servers || return 1
+    log "Deleted server '$name ($url)'"
+
+    read -r -p "Delete matching credential? [Y/n]: " delete_cred
+    if [[ -z $delete_cred || ${delete_cred,,} == "y" ]]; then
+        kwallet_delete_entry "$url"
+    fi
+}
+
+edit_set_credential() {
+    local index
+    local entry
+    local name
+    local url
+    local up
+    local down
+
+    index=$(select_server_index) || return 1
+    entry=${SERVERS[$index]}
+    parse_server_entry "$entry" name url up down || return 1
+    set_credential_for_url "$url"
+}
+
+edit_remove_credential() {
+    local index
+    local entry
+    local name
+    local url
+    local up
+    local down
+
+    index=$(select_server_index) || return 1
+    entry=${SERVERS[$index]}
+    parse_server_entry "$entry" name url up down || return 1
+    kwallet_delete_entry "$url"
+}
+
+print_edit_menu() {
+    log "a) Add server"
+    log "e) Edit server"
+    log "d) Delete server"
+    log "c) Set/update credential"
+    log "r) Remove credential"
+    log "l) List servers"
+    log "q) Quit"
+}
+
+prepare_edit_action() {
+    clear
+    print_edit_menu
+    log ""
+}
+
+run_edit_action() {
+    "$@" || true
+    log ""
+}
+
+edit_menu() {
+    local action
+    local menu_visible=0
+
+    while true; do
+        if ((menu_visible == 0)); then
+            print_edit_menu
+            menu_visible=1
+        fi
+        read -r -p "Choice: " action
+
+        case ${action,,} in
+            a)
+                prepare_edit_action
+                menu_visible=1
+                run_edit_action edit_add_server
+                ;;
+            e)
+                prepare_edit_action
+                menu_visible=1
+                run_edit_action edit_update_server
+                ;;
+            d)
+                prepare_edit_action
+                menu_visible=1
+                run_edit_action edit_delete_server
+                ;;
+            c)
+                prepare_edit_action
+                menu_visible=1
+                run_edit_action edit_set_credential
+                ;;
+            r)
+                prepare_edit_action
+                menu_visible=1
+                run_edit_action edit_remove_credential
+                ;;
+            l)
+                prepare_edit_action
+                menu_visible=1
+                run_edit_action print_server_list
+                ;;
+            q) return 0 ;;
+            *)
+                prepare_edit_action
+                menu_visible=1
+                log "Error: Unknown choice '$action'"
+                log ""
+                ;;
+        esac
+    done
+}
+
+run_edit_mode() {
+    require_user_config_for_edit || return 1
+    load_user_config || return 1
+    validate_edit_config || return 1
+    edit_menu
+}
+
 main() {
+    if [[ ${1:-} == "edit" ]]; then
+        shift
+        if (($# > 0)); then
+            log "Error: edit mode does not accept arguments"
+            exit 1
+        fi
+        run_edit_mode
+        exit $?
+    fi
+
     if ! load_user_config; then
         exit 1
     fi
@@ -498,6 +1046,10 @@ main() {
     else
         if ! server_entry=$(select_server); then
             exit 1
+        fi
+        if [[ $server_entry == "__EDIT__" ]]; then
+            run_edit_mode
+            exit $?
         fi
         if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw; then
             exit 1

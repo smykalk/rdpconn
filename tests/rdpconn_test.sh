@@ -18,6 +18,7 @@ ENV_FILE=""
 PID_FILE=""
 NMCLI_LOG=""
 KWALLET_LOG=""
+KWALLET_KEYS_FILE=""
 RDP_STATUS=0
 RDP_PID=""
 SESSION_TYPE="x11"
@@ -25,6 +26,7 @@ ACTIVE_CONNECTIONS=""
 KWALLET_SECRET="alice:super-secret"
 KWALLET_FAIL=0
 CLIENT_SLEEP=0
+PYTHON_DBUS_AVAILABLE=1
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -141,7 +143,81 @@ if [[ ${RDP_TEST_KWALLET_FAIL:-0} == 1 ]]; then
     exit 1
 fi
 
+if [[ ${1:-} == "-f" && ${3:-} == "-l" ]]; then
+    if [[ -f ${RDP_TEST_KWALLET_KEYS_FILE:-} ]]; then
+        cat "$RDP_TEST_KWALLET_KEYS_FILE"
+    fi
+    exit 0
+fi
+
 printf '%s' "${RDP_TEST_KWALLET_SECRET-alice:super-secret}"
+EOF
+
+    cat >"$BIN_DIR/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${RDP_TEST_PYTHON_DBUS_AVAILABLE:-1} != 1 ]]; then
+    exit 1
+fi
+
+if [[ ${1:-} == "-c" && ${2:-} == "import dbus" ]]; then
+    exit 0
+fi
+
+key=${3:-}
+wallet=${4:-}
+folder=${5:-}
+secret=$(cat)
+printf 'python-write:%s:%s:%s:%s\n' "$wallet" "$folder" "$key" "$secret" >>"${RDP_TEST_KWALLET_LOG:?}"
+printf '%s\n' "$key" >>"${RDP_TEST_KWALLET_KEYS_FILE:?}"
+EOF
+
+    cat >"$BIN_DIR/qdbus6" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+method=${3:-}
+case "$method" in
+    org.kde.KWallet.open)
+        printf '42\n'
+        ;;
+    org.kde.KWallet.entryList)
+        if [[ -f ${RDP_TEST_KWALLET_KEYS_FILE:-} ]]; then
+            cat "$RDP_TEST_KWALLET_KEYS_FILE"
+        fi
+        ;;
+    org.kde.KWallet.hasEntry)
+        key=${6:-}
+        if [[ -f ${RDP_TEST_KWALLET_KEYS_FILE:-} ]] && grep -Fx -- "$key" "$RDP_TEST_KWALLET_KEYS_FILE" >/dev/null; then
+            printf 'true\n'
+        else
+            printf 'false\n'
+        fi
+        ;;
+    org.kde.KWallet.hasFolder|org.kde.KWallet.createFolder)
+        printf 'true\n'
+        ;;
+    org.kde.KWallet.writePassword)
+        key=${6:-}
+        secret=${7:-}
+        printf 'qdbus-write:%s:%s\n' "$key" "$secret" >>"${RDP_TEST_KWALLET_LOG:?}"
+        printf '%s\n' "$key" >>"${RDP_TEST_KWALLET_KEYS_FILE:?}"
+        printf '0\n'
+        ;;
+    org.kde.KWallet.removeEntry)
+        key=${6:-}
+        printf 'remove:%s\n' "$key" >>"${RDP_TEST_KWALLET_LOG:?}"
+        if [[ -f ${RDP_TEST_KWALLET_KEYS_FILE:-} ]]; then
+            grep -Fxv -- "$key" "$RDP_TEST_KWALLET_KEYS_FILE" >"${RDP_TEST_KWALLET_KEYS_FILE}.tmp" || true
+            mv "${RDP_TEST_KWALLET_KEYS_FILE}.tmp" "$RDP_TEST_KWALLET_KEYS_FILE"
+        fi
+        printf '0\n'
+        ;;
+    *)
+        printf 'qdbus:%s\n' "$*" >>"${RDP_TEST_KWALLET_LOG:?}"
+        ;;
+esac
 EOF
 
     cat >"$BIN_DIR/fake-freerdp3" <<'EOF'
@@ -171,7 +247,12 @@ EOF
 sleep 1
 EOF
 
-    chmod +x "$BIN_DIR/nmcli" "$BIN_DIR/kwallet-query" "$BIN_DIR/fake-freerdp3" "$BIN_DIR/xfreerdp3" "$BIN_DIR/sdl-freerdp3" "$BIN_DIR/unsupported-client"
+    cat >"$BIN_DIR/clear" <<'EOF'
+#!/usr/bin/env bash
+printf 'clear\n' >>"${RDP_TEST_CLEAR_LOG:?}"
+EOF
+
+    chmod +x "$BIN_DIR/nmcli" "$BIN_DIR/kwallet-query" "$BIN_DIR/python3" "$BIN_DIR/qdbus6" "$BIN_DIR/fake-freerdp3" "$BIN_DIR/xfreerdp3" "$BIN_DIR/sdl-freerdp3" "$BIN_DIR/unsupported-client" "$BIN_DIR/clear"
 }
 
 setup_test() {
@@ -187,6 +268,8 @@ setup_test() {
     PID_FILE="$CURRENT_TEST_TMP/client.pid"
     NMCLI_LOG="$CURRENT_TEST_TMP/nmcli.log"
     KWALLET_LOG="$CURRENT_TEST_TMP/kwallet.log"
+    KWALLET_KEYS_FILE="$CURRENT_TEST_TMP/kwallet.keys"
+    CLEAR_LOG="$CURRENT_TEST_TMP/clear.log"
     RDP_STATUS=0
     RDP_PID=""
     SESSION_TYPE="x11"
@@ -194,10 +277,13 @@ setup_test() {
     KWALLET_SECRET="alice:super-secret"
     KWALLET_FAIL=0
     CLIENT_SLEEP=0
+    PYTHON_DBUS_AVAILABLE=1
 
     mkdir -p "$BIN_DIR" "$CONFIG_HOME"
     : >"$NMCLI_LOG"
     : >"$KWALLET_LOG"
+    : >"$KWALLET_KEYS_FILE"
+    : >"$CLEAR_LOG"
     write_stubs
 }
 
@@ -213,8 +299,11 @@ run_rdpconn() {
             RDP_TEST_ACTIVE_CONNECTIONS="$ACTIVE_CONNECTIONS" \
             RDP_TEST_NMCLI_LOG="$NMCLI_LOG" \
             RDP_TEST_KWALLET_LOG="$KWALLET_LOG" \
+            RDP_TEST_KWALLET_KEYS_FILE="$KWALLET_KEYS_FILE" \
             RDP_TEST_KWALLET_SECRET="$KWALLET_SECRET" \
             RDP_TEST_KWALLET_FAIL="$KWALLET_FAIL" \
+            RDP_TEST_PYTHON_DBUS_AVAILABLE="$PYTHON_DBUS_AVAILABLE" \
+            RDP_TEST_CLEAR_LOG="$CLEAR_LOG" \
             RDP_TEST_PID_FILE="$PID_FILE" \
             RDP_TEST_ARGV_FILE="$ARGV_FILE" \
             RDP_TEST_ENV_FILE="$ENV_FILE" \
@@ -229,8 +318,11 @@ run_rdpconn() {
             RDP_TEST_ACTIVE_CONNECTIONS="$ACTIVE_CONNECTIONS" \
             RDP_TEST_NMCLI_LOG="$NMCLI_LOG" \
             RDP_TEST_KWALLET_LOG="$KWALLET_LOG" \
+            RDP_TEST_KWALLET_KEYS_FILE="$KWALLET_KEYS_FILE" \
             RDP_TEST_KWALLET_SECRET="$KWALLET_SECRET" \
             RDP_TEST_KWALLET_FAIL="$KWALLET_FAIL" \
+            RDP_TEST_PYTHON_DBUS_AVAILABLE="$PYTHON_DBUS_AVAILABLE" \
+            RDP_TEST_CLEAR_LOG="$CLEAR_LOG" \
             RDP_TEST_PID_FILE="$PID_FILE" \
             RDP_TEST_ARGV_FILE="$ARGV_FILE" \
             RDP_TEST_ENV_FILE="$ENV_FILE" \
@@ -250,8 +342,11 @@ run_rdpconn_async() {
         RDP_TEST_ACTIVE_CONNECTIONS="$ACTIVE_CONNECTIONS" \
         RDP_TEST_NMCLI_LOG="$NMCLI_LOG" \
         RDP_TEST_KWALLET_LOG="$KWALLET_LOG" \
+        RDP_TEST_KWALLET_KEYS_FILE="$KWALLET_KEYS_FILE" \
         RDP_TEST_KWALLET_SECRET="$KWALLET_SECRET" \
         RDP_TEST_KWALLET_FAIL="$KWALLET_FAIL" \
+        RDP_TEST_PYTHON_DBUS_AVAILABLE="$PYTHON_DBUS_AVAILABLE" \
+        RDP_TEST_CLEAR_LOG="$CLEAR_LOG" \
         RDP_TEST_PID_FILE="$PID_FILE" \
         RDP_TEST_ARGV_FILE="$ARGV_FILE" \
         RDP_TEST_ENV_FILE="$ENV_FILE" \
@@ -259,6 +354,32 @@ run_rdpconn_async() {
         RDP_TEST_CLIENT_SLEEP="$CLIENT_SLEEP" \
         "$REPO_ROOT/rdpconn.sh" >"$OUTPUT_FILE" 2>&1 &
     RDP_PID=$!
+}
+
+run_rdpconn_edit() {
+    local stdin=${1-}
+
+    set +e
+    printf '%s' "$stdin" | env \
+        PATH="$BIN_DIR:$PATH" \
+        XDG_CONFIG_HOME="$CONFIG_HOME" \
+        XDG_SESSION_TYPE="$SESSION_TYPE" \
+        RDP_TEST_ACTIVE_CONNECTIONS="$ACTIVE_CONNECTIONS" \
+        RDP_TEST_NMCLI_LOG="$NMCLI_LOG" \
+        RDP_TEST_KWALLET_LOG="$KWALLET_LOG" \
+        RDP_TEST_KWALLET_KEYS_FILE="$KWALLET_KEYS_FILE" \
+        RDP_TEST_KWALLET_SECRET="$KWALLET_SECRET" \
+        RDP_TEST_KWALLET_FAIL="$KWALLET_FAIL" \
+        RDP_TEST_PYTHON_DBUS_AVAILABLE="$PYTHON_DBUS_AVAILABLE" \
+        RDP_TEST_CLEAR_LOG="$CLEAR_LOG" \
+        RDP_TEST_PID_FILE="$PID_FILE" \
+        RDP_TEST_ARGV_FILE="$ARGV_FILE" \
+        RDP_TEST_ENV_FILE="$ENV_FILE" \
+        RDP_TEST_FD_PAYLOAD_FILE="$PAYLOAD_FILE" \
+        RDP_TEST_CLIENT_SLEEP="$CLIENT_SLEEP" \
+        "$REPO_ROOT/rdpconn.sh" edit >"$OUTPUT_FILE" 2>&1
+    RDP_STATUS=$?
+    set -e
 }
 
 wait_for_rdpconn() {
@@ -612,6 +733,112 @@ test_bundled_fallback_config_validates() {
     assert_not_contains "$OUTPUT_FILE" "Missing configuration variables"
 }
 
+test_edit_add_server_and_python_credential() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\ny\nalice:secret\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Added|added.example|*|-"'
+    assert_contains "$KWALLET_LOG" "python-write:kdewallet:RDP:added.example:alice:secret"
+    assert_contains "$OUTPUT_FILE" "Saved credential for 'added.example'"
+    assert_not_contains "$KWALLET_LOG" "-r added.example"
+}
+
+test_edit_list_marks_credentials_without_reading_values() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    printf '%s\n' "server.example" >"$KWALLET_KEYS_FILE"
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Test (server.example) credential: present"
+    assert_not_contains "$KWALLET_LOG" "-r server.example"
+}
+
+test_edit_update_server_keeps_blank_fields() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'e\n1\nRenamed\nrenamed.example\n\npersonal-one\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Renamed|renamed.example|-|personal-one"'
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+}
+
+test_edit_delete_server_and_credential() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    printf '%s\n' "server.example" >"$KWALLET_KEYS_FILE"
+
+    run_rdpconn_edit $'d\n1\ny\ny\nq\n'
+    assert_success
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+    assert_contains "$KWALLET_LOG" "remove:server.example"
+}
+
+test_edit_set_credential_bash_fallback_warns() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    PYTHON_DBUS_AVAILABLE=0
+
+    run_rdpconn_edit $'c\n1\nalice:secret\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Warning: Python DBus unavailable; falling back to qdbus6. Secret may be visible in process arguments briefly."
+    assert_contains "$KWALLET_LOG" "qdbus-write:server.example:alice:secret"
+}
+
+test_edit_rejects_fallback_config() {
+    setup_test "${FUNCNAME[0]}"
+    rm -f "$CONFIG_HOME/rdpconn.conf"
+
+    run_rdpconn_edit $'q\n'
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Edit mode requires user config"
+}
+
+test_launch_selector_e_enters_edit_mode() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=(
+    "First|first.example|-|-"
+    "Second|second.example|-|-"
+)
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'e\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Enter 'e' to edit servers"
+    assert_contains "$OUTPUT_FILE" "a) Add server"
+}
+
+test_edit_mode_clears_after_choice() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$CLEAR_LOG" "clear"
+}
+
+test_edit_invalid_nested_choice_does_not_exit() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'c\nl\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Error: Invalid choice"
+}
+
 run_test() {
     local test_name=$1
 
@@ -635,5 +862,14 @@ run_test test_validation_errors
 run_test test_credential_errors
 run_test test_launch_rejections
 run_test test_bundled_fallback_config_validates
+run_test test_edit_add_server_and_python_credential
+run_test test_edit_list_marks_credentials_without_reading_values
+run_test test_edit_update_server_keeps_blank_fields
+run_test test_edit_delete_server_and_credential
+run_test test_edit_set_credential_bash_fallback_warns
+run_test test_edit_rejects_fallback_config
+run_test test_launch_selector_e_enters_edit_mode
+run_test test_edit_mode_clears_after_choice
+run_test test_edit_invalid_nested_choice_does_not_exit
 
 printf 'rdpconn test suite passed\n'

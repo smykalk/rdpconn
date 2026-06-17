@@ -34,6 +34,20 @@ After editing the config, run `rdpconn`. The script will apply the VPN changes, 
 
 If you are migrating an older config, rename `RDP_CLIENTS` to `RDP_CLIENTS_X11` and add a separate `RDP_CLIENTS_WAYLAND` list.
 
+## Editing Servers and Credentials
+
+Run:
+
+```bash
+rdpconn edit
+```
+
+The edit menu can add, edit, delete, and list server entries, plus set or remove matching KWallet credentials. Server edits update the `SERVERS` array in your user config at `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`; the fallback config shipped with the project is not edited.
+
+Credential entries are stored in the configured `KWALLET` and `KWALLET_FOLDER`, keyed by the server URL. Values must use `username:password` format. Edit mode checks credential presence by key only and does not read stored secret values.
+
+Credential writes use Python DBus by default so the secret is not passed as a command-line argument. If Python DBus is unavailable, edit mode falls back to `qdbus6` and prints a warning because that path may briefly expose the secret in process arguments.
+
 ## Wayland multi-monitor tips
 
 - Multi-monitor only engages in fullscreen; include `/f` with `/multimon` and your `/monitors:<ids>` selection (avoid `/span`).
