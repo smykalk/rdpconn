@@ -2,7 +2,7 @@ This project is released under the Unlicense. See LICENSE for details.
 
 # rdpconn
 
-`rdpconn` disconnects any configured personal VPN, connects to your organisation VPN, pulls credentials from KWallet, and launches `xfreerdp3` with your preferred options.
+`rdpconn` disconnects configured personal VPNs, connects to your organisation VPNs, pulls credentials from KWallet, and launches your configured RDP client with your preferred options.
 
 ## Installation
 
@@ -20,11 +20,22 @@ Edit `${XDG_CONFIG_HOME:-$HOME}/.config/rdpconn.conf`. The file shipped with the
 
 Key settings:
 
-- `PERS_VPNS`: array of personal VPN connection IDs to disconnect before launching RDP.
-- `ORG_VPN`: connection ID for the organisation VPN that must be up during the session.
-- `SERVERS`: list of RDP hosts; a menu appears when multiple entries exist.
-- `KWALLET`, `KWALLET_FOLDER`: wallet and folder that store `${SERVER}_username` / `${SERVER}_password` secrets.
-- `RDP_ARGS`: base arguments passed to `xfreerdp3`.
+- `UP_VPNS`: global array of VPN connection IDs to bring up.
+- `DOWN_VPNS`: global array of VPN connection IDs to bring down.
+- `SERVERS`: list of entries in `NAME|URL|UP_VPNS|DOWN_VPNS` format (lists are comma-separated). Use `*` to apply the global arrays and `-` for none. The menu shows `NAME (URL)`.
+- `KWALLET`, `KWALLET_FOLDER`: wallet and folder that store an entry keyed by `${URL}` with `username:password`.
+- `RDP_CLIENTS_X11`, `RDP_CLIENTS_WAYLAND`: ordered lists of FreeRDP frontends to try for each session type. `RDP_CLIENTS` is no longer supported.
+- `RDP_ARGS_X11`, `RDP_ARGS_WAYLAND`: argument sets selected automatically based on `XDG_SESSION_TYPE` (`x11` vs `wayland`). Use these to pick different monitor sets per display system.
 - `RDP_SHARE` (optional): local path to expose via `/drive:rdp-share`; omit to disable drive sharing.
+- `RDP_ARGS_<CLIENT>` (optional): per-client overrides. The variable name is the client name uppercased, with non-alphanumerics replaced by `_`. When set, it replaces the display-specific args for that client.
+- `RDP_ENV_<CLIENT>` (optional): per-client environment variables, e.g., `RDP_ENV_SDL_FREERDP3=("SDL_VIDEODRIVER=wayland")`.
 
-After editing the config, run `rdpconn`. The script will apply the VPN changes, fetch credentials, and open the RDP session. When `xfreerdp3` exits, your previous VPN state is restored automatically.
+After editing the config, run `rdpconn`. The script will apply the VPN changes, fetch credentials, and open the RDP session. Passwords are passed to supported FreeRDP clients through a private file descriptor instead of the process command line. When the RDP client exits, your previous VPN state is restored automatically.
+
+If you are migrating an older config, rename `RDP_CLIENTS` to `RDP_CLIENTS_X11` and add a separate `RDP_CLIENTS_WAYLAND` list.
+
+## Wayland multi-monitor tips
+
+- Multi-monitor only engages in fullscreen; include `/f` with `/multimon` and your `/monitors:<ids>` selection (avoid `/span`).
+- On Wayland compositors, X11 clients run via XWayland; if multi-monitor is unstable, limit to a single monitor in `RDP_ARGS_WAYLAND`.
+- Use display-specific args to pick different monitor sets per session type, e.g., `RDP_ARGS_X11=( "/multimon" "/monitors:0,1" "/f" ...)` and `RDP_ARGS_WAYLAND=( "/monitors:0" "/f" ...)`.
