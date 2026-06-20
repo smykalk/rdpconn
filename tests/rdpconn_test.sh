@@ -789,6 +789,28 @@ test_edit_set_credential_bash_fallback_warns() {
     assert_contains "$KWALLET_LOG" "qdbus-write:server.example:alice:secret"
 }
 
+test_edit_nested_server_choice_can_back_out() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'e\nb\nd\nb\nc\nb\nr\nb\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "b) Back"
+    assert_contains "$OUTPUT_FILE" "Cancelled"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+    assert_not_contains "$KWALLET_LOG" "remove:server.example"
+}
+
+test_edit_nested_server_choice_can_refresh_list() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'c\nl\nb\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "b) Back"
+    assert_not_contains "$OUTPUT_FILE" "Error: Invalid choice"
+}
+
 test_edit_rejects_fallback_config() {
     setup_test "${FUNCNAME[0]}"
     rm -f "$CONFIG_HOME/rdpconn.conf"
@@ -821,6 +843,39 @@ EOF
     assert_contains "$OUTPUT_FILE" "a) Add server"
 }
 
+test_launch_selector_edit_can_return_to_main_menu() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=(
+    "First|first.example|-|-"
+    "Second|second.example|-|-"
+)
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'e\nm\n2\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "m) Main menu"
+    assert_contains "$OUTPUT_FILE" "Selected: 'Second (second.example)'"
+    assert_contains "$PAYLOAD_FILE" "/v:second.example"
+}
+
+test_edit_mode_clears_on_entry() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+
+    run_rdpconn_edit $'q\n'
+    assert_success
+    assert_contains "$CLEAR_LOG" "clear"
+}
+
 test_edit_mode_clears_after_choice() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
@@ -834,9 +889,10 @@ test_edit_invalid_nested_choice_does_not_exit() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
 
-    run_rdpconn_edit $'c\nl\nq\n'
+    run_rdpconn_edit $'c\nx\nb\nq\n'
     assert_success
     assert_contains "$OUTPUT_FILE" "Error: Invalid choice"
+    assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
 run_test() {
@@ -867,8 +923,12 @@ run_test test_edit_list_marks_credentials_without_reading_values
 run_test test_edit_update_server_keeps_blank_fields
 run_test test_edit_delete_server_and_credential
 run_test test_edit_set_credential_bash_fallback_warns
+run_test test_edit_nested_server_choice_can_back_out
+run_test test_edit_nested_server_choice_can_refresh_list
 run_test test_edit_rejects_fallback_config
 run_test test_launch_selector_e_enters_edit_mode
+run_test test_launch_selector_edit_can_return_to_main_menu
+run_test test_edit_mode_clears_on_entry
 run_test test_edit_mode_clears_after_choice
 run_test test_edit_invalid_nested_choice_does_not_exit
 

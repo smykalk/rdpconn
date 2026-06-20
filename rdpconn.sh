@@ -778,14 +778,31 @@ print_server_list() {
 select_server_index() {
     local choice
 
-    print_server_list stderr
-    read -r -p "Enter choice: " choice
-    if [[ ! $choice =~ ^[0-9]+$ || $choice -lt 1 || $choice -gt ${#SERVERS[@]} ]]; then
-        log_err "Error: Invalid choice"
-        return 1
-    fi
+    while true; do
+        print_server_list stderr
+        log_err "b) Back"
+        if ! read -r -p "Enter choice (or b to back): " choice; then
+            return 1
+        fi
 
-    printf '%s' "$((choice - 1))"
+        case ${choice,,} in
+            b)
+                log_err "Cancelled"
+                return 1
+                ;;
+            l)
+                continue
+                ;;
+        esac
+
+        if [[ ! $choice =~ ^[0-9]+$ || $choice -lt 1 || $choice -gt ${#SERVERS[@]} ]]; then
+            log_err "Error: Invalid choice"
+            continue
+        fi
+
+        printf '%s' "$((choice - 1))"
+        return 0
+    done
 }
 
 edit_add_server() {
@@ -930,18 +947,25 @@ edit_remove_credential() {
 }
 
 print_edit_menu() {
+    local allow_main_menu=${1:-0}
+
     log "a) Add server"
     log "e) Edit server"
     log "d) Delete server"
     log "c) Set/update credential"
     log "r) Remove credential"
     log "l) List servers"
+    if ((allow_main_menu)); then
+        log "m) Main menu"
+    fi
     log "q) Quit"
 }
 
 prepare_edit_action() {
+    local allow_main_menu=${1:-0}
+
     clear
-    print_edit_menu
+    print_edit_menu "$allow_main_menu"
     log ""
 }
 
@@ -951,50 +975,63 @@ run_edit_action() {
 }
 
 edit_menu() {
+    local allow_main_menu=${1:-0}
     local action
     local menu_visible=0
 
+    clear
     while true; do
         if ((menu_visible == 0)); then
-            print_edit_menu
+            print_edit_menu "$allow_main_menu"
             menu_visible=1
         fi
-        read -r -p "Choice: " action
+        if ! read -r -p "Choice: " action; then
+            return 0
+        fi
 
         case ${action,,} in
             a)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 run_edit_action edit_add_server
                 ;;
             e)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 run_edit_action edit_update_server
                 ;;
             d)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 run_edit_action edit_delete_server
                 ;;
             c)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 run_edit_action edit_set_credential
                 ;;
             r)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 run_edit_action edit_remove_credential
                 ;;
             l)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 run_edit_action print_server_list
                 ;;
+            m)
+                if ((allow_main_menu)); then
+                    return 2
+                fi
+                prepare_edit_action "$allow_main_menu"
+                menu_visible=1
+                log "Error: Unknown choice '$action'"
+                log ""
+                ;;
             q) return 0 ;;
             *)
-                prepare_edit_action
+                prepare_edit_action "$allow_main_menu"
                 menu_visible=1
                 log "Error: Unknown choice '$action'"
                 log ""
@@ -1004,10 +1041,12 @@ edit_menu() {
 }
 
 run_edit_mode() {
+    local allow_main_menu=${1:-0}
+
     require_user_config_for_edit || return 1
     load_user_config || return 1
     validate_edit_config || return 1
-    edit_menu
+    edit_menu "$allow_main_menu"
 }
 
 main() {
@@ -1037,24 +1076,40 @@ main() {
     local server_url
     local org_raw
     local pers_raw
-    if ((${#SERVERS[@]} == 1)); then
-        server_entry=${SERVERS[0]}
-        if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw; then
-            exit 1
+    while true; do
+        if ((${#SERVERS[@]} == 1)); then
+            server_entry=${SERVERS[0]}
+            if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw; then
+                exit 1
+            fi
+            log "Auto-selecting: '${server_name} (${server_url})'"
+            break
         fi
-        log "Auto-selecting: '${server_name} (${server_url})'"
-    else
+
         if ! server_entry=$(select_server); then
             exit 1
         fi
         if [[ $server_entry == "__EDIT__" ]]; then
-            run_edit_mode
-            exit $?
+            set +e
+            run_edit_mode 1
+            local edit_status=$?
+            set -e
+            if [[ $edit_status -eq 2 ]]; then
+                if ! load_user_config; then
+                    exit 1
+                fi
+                if ! validate_config "$display_mode"; then
+                    exit 1
+                fi
+                continue
+            fi
+            exit "$edit_status"
         fi
         if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw; then
             exit 1
         fi
-    fi
+        break
+    done
 
     local -a selected_org_vpns=()
     local -a selected_pers_vpns=()
