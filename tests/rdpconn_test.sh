@@ -109,14 +109,30 @@ set -euo pipefail
 
 log=${RDP_TEST_NMCLI_LOG:?}
 
-if [[ ${1:-} == "-t" && ${2:-} == "-f" && ${3:-} == "NAME" && ${4:-} == "connection" && ${5:-} == "show" && ${6:-} == "--active" ]]; then
-    printf '%s\n' "show-active" >>"$log"
-    active_csv=${RDP_TEST_ACTIVE_CONNECTIONS-}
-    if [[ -n $active_csv ]]; then
-        IFS=',' read -r -a active_connections <<<"$active_csv"
-        printf '%s\n' "${active_connections[@]}"
+if [[ ${1:-} == "-t" ]]; then
+    shift
+    escape=yes
+    if [[ ${1:-} == "-e" ]]; then
+        if [[ ${2:-} == "no" ]]; then
+            escape=no
+        fi
+        shift 2
     fi
-    exit 0
+    if [[ ${1:-} == "-f" && ${2:-} == "NAME" && ${3:-} == "connection" && ${4:-} == "show" && ${5:-} == "--active" ]]; then
+        printf '%s\n' "show-active" >>"$log"
+        active_csv=${RDP_TEST_ACTIVE_CONNECTIONS-}
+        if [[ -n $active_csv ]]; then
+            IFS=',' read -r -a active_connections <<<"$active_csv"
+            for active_name in "${active_connections[@]}"; do
+                if [[ $escape == "yes" ]]; then
+                    active_name=${active_name//\\/\\\\}
+                    active_name=${active_name//:/\\:}
+                fi
+                printf '%s\n' "$active_name"
+            done
+        fi
+        exit 0
+    fi
 fi
 
 if [[ ${1:-} == "connection" && ${2:-} == "down" && ${3:-} == "id" ]]; then
@@ -559,6 +575,27 @@ EOF
     assert_contains "$NMCLI_LOG" "down:personal-one"
     assert_not_contains "$NMCLI_LOG" "up:global-org"
     assert_not_contains "$NMCLI_LOG" "down:global-personal"
+}
+
+test_vpn_names_with_colon_are_matched_active() {
+    setup_test "${FUNCNAME[0]}"
+    ACTIVE_CONNECTIONS="work:personal,work:org"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("work:org")
+DOWN_VPNS=("work:personal")
+SERVERS=("Test|server.example|*|*")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_contains "$NMCLI_LOG" "down:work:personal"
+    assert_not_contains "$NMCLI_LOG" "up:work:org"
 }
 
 test_rdp_env_and_share_are_passed() {
@@ -1147,6 +1184,7 @@ run_test test_display_mode_and_client_selection
 run_test test_client_fallback_and_no_available_client_error
 run_test test_menu_selection_uses_selected_server
 run_test test_vpn_defaults_and_cleanup
+run_test test_vpn_names_with_colon_are_matched_active
 run_test test_explicit_server_vpn_lists_are_trimmed
 run_test test_rdp_env_and_share_are_passed
 run_test test_validation_errors

@@ -274,7 +274,7 @@ is_connection_active() {
         if [[ $active == "$target" ]]; then
             return 0
         fi
-    done < <(nmcli -t -f NAME connection show --active)
+    done < <(nmcli -t -e no -f NAME connection show --active)
 
     return 1
 }
