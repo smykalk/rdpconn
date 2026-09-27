@@ -895,6 +895,22 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_install_respects_xdg_config_home() {
+    setup_test "${FUNCNAME[0]}"
+    local fake_home="$CURRENT_TEST_TMP/home"
+    mkdir -p "$fake_home/.config"
+
+    (
+        cd "$REPO_ROOT"
+        HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" bash install.sh >/dev/null
+    ) || fail "install.sh failed"
+
+    [[ -x "$fake_home/.local/bin/rdpconn" ]] || fail "Expected binary at \$HOME/.local/bin/rdpconn"
+    [[ -f "$fake_home/.config/rdpconn.conf" ]] || fail "Expected config at \$XDG_CONFIG_HOME/rdpconn.conf"
+    [[ ! -e "$fake_home/.config/.config" ]] || fail "Config was installed under a nested .config directory"
+    [[ ! -e "$fake_home/.config/.local" ]] || fail "Binary was installed under XDG_CONFIG_HOME"
+}
+
 run_test() {
     local test_name=$1
 
@@ -931,5 +947,6 @@ run_test test_launch_selector_edit_can_return_to_main_menu
 run_test test_edit_mode_clears_on_entry
 run_test test_edit_mode_clears_after_choice
 run_test test_edit_invalid_nested_choice_does_not_exit
+run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'

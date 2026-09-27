@@ -12,11 +12,11 @@ From the repository root run:
 ./install.sh
 ```
 
-This copies the script to `${XDG_CONFIG_HOME:-$HOME}/.local/bin/rdpconn` and installs the default configuration at `${XDG_CONFIG_HOME:-$HOME}/.config/rdpconn.conf`.
+This copies the script to `$HOME/.local/bin/rdpconn` and installs the default configuration at `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`.
 
 ## Configuration
 
-Edit `${XDG_CONFIG_HOME:-$HOME}/.config/rdpconn.conf`. The file shipped with the project contains example values; copy it to your config directory if it is missing.
+Edit `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`. The file shipped with the project contains example values; copy it to your config directory if it is missing.
 
 Key settings:
 

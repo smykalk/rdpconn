@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_HOME="${XDG_CONFIG_HOME:-$HOME}"
-BIN_HOME="$SCRIPT_HOME/.local/bin"
-CONFIG_HOME="$SCRIPT_HOME/.config"
+BIN_HOME="$HOME/.local/bin"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 SCRIPT_SOURCE="rdpconn.sh"
 CONFIG_SOURCE="rdpconn.conf"
 TARGET_SCRIPT="$BIN_HOME/rdpconn"
@@ -13,7 +12,7 @@ log() {
     printf '%s\n' "$*"
 }
 
-log "Using script home: $SCRIPT_HOME"
+log "Using config home: $CONFIG_HOME"
 log "Installing script to: $TARGET_SCRIPT"
 mkdir -p "$BIN_HOME"
 cp "$SCRIPT_SOURCE" "$TARGET_SCRIPT"
