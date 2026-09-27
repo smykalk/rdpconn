@@ -19,6 +19,10 @@ PID_FILE=""
 NMCLI_LOG=""
 KWALLET_LOG=""
 KWALLET_KEYS_FILE=""
+MONITOR_LIST_FILE=""
+MONITOR_CALL_FILE=""
+MONITOR_ENV_FILE=""
+MONITOR_EXIT_CODE=""
 RDP_STATUS=0
 RDP_PID=""
 SESSION_TYPE="x11"
@@ -240,6 +244,13 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${1:-} == "/list:monitor" ]]; then
+    printf '%s\n' "$@" >"${RDP_TEST_MONITOR_CALL_FILE:?}"
+    env | sort >"${RDP_TEST_MONITOR_ENV_FILE:?}"
+    cat "${RDP_TEST_MONITOR_LIST_FILE:?}"
+    exit "${RDP_TEST_MONITOR_EXIT_CODE:-0}"
+fi
+
 printf '%s\n' "$$" >"${RDP_TEST_PID_FILE:?}"
 printf '%s\n' "$@" >"${RDP_TEST_ARGV_FILE:?}"
 env | sort >"${RDP_TEST_ENV_FILE:?}"
@@ -286,6 +297,10 @@ setup_test() {
     KWALLET_LOG="$CURRENT_TEST_TMP/kwallet.log"
     KWALLET_KEYS_FILE="$CURRENT_TEST_TMP/kwallet.keys"
     CLEAR_LOG="$CURRENT_TEST_TMP/clear.log"
+    MONITOR_LIST_FILE="$CURRENT_TEST_TMP/monitors.list"
+    MONITOR_CALL_FILE="$CURRENT_TEST_TMP/monitors.calls"
+    MONITOR_ENV_FILE="$CURRENT_TEST_TMP/monitors.env"
+    MONITOR_EXIT_CODE=0
     RDP_STATUS=0
     RDP_PID=""
     SESSION_TYPE="x11"
@@ -300,6 +315,9 @@ setup_test() {
     : >"$KWALLET_LOG"
     : >"$KWALLET_KEYS_FILE"
     : >"$CLEAR_LOG"
+    : >"$MONITOR_LIST_FILE"
+    : >"$MONITOR_CALL_FILE"
+    : >"$MONITOR_ENV_FILE"
     write_stubs
 }
 
@@ -325,6 +343,10 @@ run_rdpconn() {
             RDP_TEST_ENV_FILE="$ENV_FILE" \
             RDP_TEST_FD_PAYLOAD_FILE="$PAYLOAD_FILE" \
             RDP_TEST_CLIENT_SLEEP="$CLIENT_SLEEP" \
+            RDP_TEST_MONITOR_LIST_FILE="$MONITOR_LIST_FILE" \
+            RDP_TEST_MONITOR_CALL_FILE="$MONITOR_CALL_FILE" \
+            RDP_TEST_MONITOR_ENV_FILE="$MONITOR_ENV_FILE" \
+            RDP_TEST_MONITOR_EXIT_CODE="$MONITOR_EXIT_CODE" \
             "$REPO_ROOT/rdpconn.sh" >"$OUTPUT_FILE" 2>&1
     else
         env \
@@ -344,6 +366,10 @@ run_rdpconn() {
             RDP_TEST_ENV_FILE="$ENV_FILE" \
             RDP_TEST_FD_PAYLOAD_FILE="$PAYLOAD_FILE" \
             RDP_TEST_CLIENT_SLEEP="$CLIENT_SLEEP" \
+            RDP_TEST_MONITOR_LIST_FILE="$MONITOR_LIST_FILE" \
+            RDP_TEST_MONITOR_CALL_FILE="$MONITOR_CALL_FILE" \
+            RDP_TEST_MONITOR_ENV_FILE="$MONITOR_ENV_FILE" \
+            RDP_TEST_MONITOR_EXIT_CODE="$MONITOR_EXIT_CODE" \
             "$REPO_ROOT/rdpconn.sh" >"$OUTPUT_FILE" 2>&1
     fi
     RDP_STATUS=$?
@@ -368,6 +394,10 @@ run_rdpconn_async() {
         RDP_TEST_ENV_FILE="$ENV_FILE" \
         RDP_TEST_FD_PAYLOAD_FILE="$PAYLOAD_FILE" \
         RDP_TEST_CLIENT_SLEEP="$CLIENT_SLEEP" \
+        RDP_TEST_MONITOR_LIST_FILE="$MONITOR_LIST_FILE" \
+        RDP_TEST_MONITOR_CALL_FILE="$MONITOR_CALL_FILE" \
+        RDP_TEST_MONITOR_ENV_FILE="$MONITOR_ENV_FILE" \
+        RDP_TEST_MONITOR_EXIT_CODE="$MONITOR_EXIT_CODE" \
         "$REPO_ROOT/rdpconn.sh" >"$OUTPUT_FILE" 2>&1 &
     RDP_PID=$!
 }
@@ -393,6 +423,10 @@ run_rdpconn_edit() {
         RDP_TEST_ENV_FILE="$ENV_FILE" \
         RDP_TEST_FD_PAYLOAD_FILE="$PAYLOAD_FILE" \
         RDP_TEST_CLIENT_SLEEP="$CLIENT_SLEEP" \
+        RDP_TEST_MONITOR_LIST_FILE="$MONITOR_LIST_FILE" \
+        RDP_TEST_MONITOR_CALL_FILE="$MONITOR_CALL_FILE" \
+        RDP_TEST_MONITOR_ENV_FILE="$MONITOR_ENV_FILE" \
+        RDP_TEST_MONITOR_EXIT_CODE="$MONITOR_EXIT_CODE" \
         "$REPO_ROOT/rdpconn.sh" edit >"$OUTPUT_FILE" 2>&1
     RDP_STATUS=$?
     set -e
@@ -757,6 +791,259 @@ EOF
     run_rdpconn
     assert_failure
     assert_contains "$OUTPUT_FILE" "RDP argument contains a newline"
+}
+
+test_monitors_position_tokens_resolve() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+        [2] 1080x1920 +0+0
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/multimon" "/monitors:+1080+360,+3000+360" "/f")
+RDP_ARGS_WAYLAND=("/wayland-default")
+RDP_ENV_FAKE_FREERDP3=("MONITOR_QUERY_MARKER=1")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Resolved '/monitors:+1080+360,+3000+360' to '/monitors:0,1'"
+    assert_contains "$MONITOR_CALL_FILE" "/list:monitor"
+    assert_contains "$MONITOR_ENV_FILE" "MONITOR_QUERY_MARKER=1"
+    assert_contains "$PAYLOAD_FILE" "/monitors:0,1"
+    assert_not_contains "$PAYLOAD_FILE" "+1080+360"
+}
+
+test_monitors_name_tokens_resolve() {
+    setup_test "${FUNCNAME[0]}"
+    SESSION_TYPE="wayland"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+listing 3 monitors:
+     * [3] [Hewlett Packard HP E240] 1920x1080 +1080+360
+       [4] [Samsung Electric Company SyncMaster] 1080x1920 +0+0
+       [5] [AOC 2460G5] 1920x1080 +3000+360
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/monitors:name:hp e240,name:AOC 2460G5")
+EOF
+
+    # sdl-freerdp3 prints the monitor list but exits 255; resolution must still succeed.
+    MONITOR_EXIT_CODE=255
+
+    run_rdpconn
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Resolved '/monitors:name:hp e240,name:AOC 2460G5' to '/monitors:3,5'"
+    assert_contains "$PAYLOAD_FILE" "/monitors:3,5"
+    assert_not_contains "$PAYLOAD_FILE" "name:"
+}
+
+test_monitors_invalid_or_unmatched_tokens_abort() {
+    setup_test "${FUNCNAME[0]}_numeric"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:0,1")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Invalid /monitors token '0'"
+    [[ ! -s $MONITOR_CALL_FILE ]] || fail "Monitor list must not be queried for invalid /monitors tokens"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched for invalid /monitors tokens"
+
+    setup_test "${FUNCNAME[0]}_unmatched"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:+9999+9999")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "did not match any monitor"
+    assert_contains "$OUTPUT_FILE" "Available monitors:"
+    assert_contains "$OUTPUT_FILE" "[0] unnamed 1920x1080 +1080+360"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched for unmatched /monitors tokens"
+}
+
+test_monitors_name_tokens_require_named_client() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:name:HP E240")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "does not report monitor names"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when monitor names are unavailable"
+}
+
+test_monitors_ambiguous_name_tokens_abort() {
+    setup_test "${FUNCNAME[0]}"
+    SESSION_TYPE="wayland"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+     * [3] [Dell U2412M] 1920x1200 +0+0
+       [4] [Dell U2412M] 1920x1200 +1920+0
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/monitors:name:Dell U2412M")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "is ambiguous and matched multiple monitors"
+    assert_contains "$OUTPUT_FILE" "[3] Dell U2412M 1920x1200 +0+0"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched for ambiguous /monitors tokens"
+}
+
+test_monitors_negative_position_tokens_resolve() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +0+0
+        [1] 1920x1080 +-1920+0
+        [2] 1920x1080 +0+-1080
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:-1920+0,+0-1080")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Resolved '/monitors:-1920+0,+0-1080' to '/monitors:1,2'"
+    assert_contains "$PAYLOAD_FILE" "/monitors:1,2"
+}
+
+test_monitors_duplicate_and_multiple_args_abort() {
+    setup_test "${FUNCNAME[0]}_duplicate"
+    SESSION_TYPE="wayland"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+     * [3] [Dell U2412M] 1920x1200 +0+0
+       [4] [Hewlett Packard HP E240] 1920x1080 +1920+0
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/monitors:name:Dell U2412M,name:Dell")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "selects monitor '3' more than once"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched for duplicate /monitors tokens"
+
+    setup_test "${FUNCNAME[0]}_multiple"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:+0+0" "/monitors:+1920+0")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Multiple /monitors arguments are not supported"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched with multiple /monitors arguments"
+}
+
+test_monitors_unparsable_lines_are_reported() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+listing 2 monitors:
+      * [0] 1920x1080 +0+0
+        [1] Dell U2412M 1920x1080 +1920+0
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:+0+0")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Warning: Ignored unrecognized monitor list line(s):"
+    assert_contains "$OUTPUT_FILE" "Dell U2412M 1920x1080 +1920+0"
+    assert_contains "$PAYLOAD_FILE" "/monitors:0"
 }
 
 test_bundled_fallback_config_validates() {
@@ -1190,6 +1477,14 @@ run_test test_rdp_env_and_share_are_passed
 run_test test_validation_errors
 run_test test_credential_errors
 run_test test_launch_rejections
+run_test test_monitors_position_tokens_resolve
+run_test test_monitors_name_tokens_resolve
+run_test test_monitors_negative_position_tokens_resolve
+run_test test_monitors_invalid_or_unmatched_tokens_abort
+run_test test_monitors_duplicate_and_multiple_args_abort
+run_test test_monitors_unparsable_lines_are_reported
+run_test test_monitors_name_tokens_require_named_client
+run_test test_monitors_ambiguous_name_tokens_abort
 run_test test_bundled_fallback_config_validates
 run_test test_edit_add_server_and_python_credential
 run_test test_edit_list_marks_credentials_without_reading_values

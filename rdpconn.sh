@@ -390,6 +390,209 @@ build_rdp_env() {
     out=()
 }
 
+describe_monitor() {
+    local index=$1
+    local name=${MONITOR_NAMES[$index]:-}
+
+    printf '[%s] %s %s %s' "${MONITOR_IDS[$index]}" "${name:-unnamed}" "${MONITOR_SIZES[$index]}" "${MONITOR_POSITIONS[$index]}"
+}
+
+log_available_monitors() {
+    local i
+
+    log_err "Available monitors:"
+    for i in "${!MONITOR_IDS[@]}"; do
+        log_err "  $(describe_monitor "$i")"
+    done
+}
+
+load_monitor_list() {
+    local client=$1
+    local -n env_ref=$2
+    local output
+    local line
+    local status=0
+    local position
+    local -a unparsed=()
+
+    # Some clients (sdl-freerdp3) print the monitor list and then exit nonzero,
+    # so parse the output instead of relying on the exit status.
+    output=$(env "${env_ref[@]}" "$client" /list:monitor 2>/dev/null) || status=$?
+
+    MONITOR_IDS=()
+    MONITOR_NAMES=()
+    MONITOR_SIZES=()
+    MONITOR_POSITIONS=()
+    MONITOR_NAMES_PRESENT=0
+
+    while IFS= read -r line; do
+        if [[ $line =~ ^[[:space:]]*\*?[[:space:]]*\[([0-9]+)\][[:space:]]*(\[([^]]*)\])?[[:space:]]*([0-9]+x[0-9]+)[[:space:]]*\+(-?[0-9]+)\+(-?[0-9]+) ]]; then
+            printf -v position '%+d%+d' "${BASH_REMATCH[5]}" "${BASH_REMATCH[6]}"
+            MONITOR_IDS+=("${BASH_REMATCH[1]}")
+            MONITOR_NAMES+=("${BASH_REMATCH[3]}")
+            MONITOR_SIZES+=("${BASH_REMATCH[4]}")
+            MONITOR_POSITIONS+=("$position")
+            if [[ -n ${BASH_REMATCH[3]} ]]; then
+                MONITOR_NAMES_PRESENT=1
+            fi
+        elif [[ $line == *'['* ]]; then
+            unparsed+=("$line")
+        fi
+    done <<< "$output"
+
+    if ((${#unparsed[@]} > 0)); then
+        log_err "Warning: Ignored unrecognized monitor list line(s):"
+        for line in "${unparsed[@]}"; do
+            log_err "  $line"
+        done
+    fi
+
+    if ((${#MONITOR_IDS[@]} == 0)); then
+        log_err "Error: Could not parse monitor list from '$client /list:monitor' (exit status $status)"
+        return 1
+    fi
+}
+
+valid_monitor_token() {
+    local token=$1
+
+    if [[ $token == name:* ]]; then
+        [[ -n $(trim_ws "${token#name:}") ]]
+        return
+    fi
+
+    [[ $token =~ ^[+-][0-9]+[+-][0-9]+$ ]]
+}
+
+# Expects a token already accepted by valid_monitor_token.
+resolve_monitor_token() {
+    local token=$1
+    local -n out_index=$2
+    local matches=()
+    local i
+
+    if [[ $token == name:* ]]; then
+        local needle
+        local needle_lower
+        local name_lower
+
+        needle=$(trim_ws "${token#name:}")
+        if ((MONITOR_NAMES_PRESENT == 0)); then
+            log_err "Error: The selected RDP client does not report monitor names; use a signed position like '+1080+360' instead of '$token'"
+            return 1
+        fi
+        needle_lower=${needle,,}
+        for i in "${!MONITOR_IDS[@]}"; do
+            name_lower=${MONITOR_NAMES[i],,}
+            if [[ -n $name_lower && $name_lower == *"$needle_lower"* ]]; then
+                matches+=("$i")
+            fi
+        done
+    elif [[ $token =~ ^([+-][0-9]+)([+-][0-9]+)$ ]]; then
+        local position
+
+        printf -v position '%+d%+d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        for i in "${!MONITOR_IDS[@]}"; do
+            if [[ ${MONITOR_POSITIONS[i]} == "$position" ]]; then
+                matches+=("$i")
+            fi
+        done
+    fi
+
+    if ((${#matches[@]} == 0)); then
+        log_err "Error: /monitors token '$token' did not match any monitor"
+        log_available_monitors
+        return 1
+    fi
+
+    if ((${#matches[@]} > 1)); then
+        log_err "Error: /monitors token '$token' is ambiguous and matched multiple monitors:"
+        for i in "${matches[@]}"; do
+            log_err "  $(describe_monitor "$i")"
+        done
+        log_err "Use an exact signed position (e.g. '-1920+0') instead."
+        return 1
+    fi
+
+    out_index=${matches[0]}
+}
+
+resolve_monitor_args() {
+    local client=$1
+    local -n args_ref=$2
+    local env_var_name=$3
+    local monitors_index=-1
+    local i
+
+    for i in "${!args_ref[@]}"; do
+        if [[ ${args_ref[i]} == /monitors:* ]]; then
+            if ((monitors_index >= 0)); then
+                log_err "Error: Multiple /monitors arguments are not supported"
+                return 1
+            fi
+            monitors_index=$i
+        fi
+    done
+
+    if ((monitors_index < 0)); then
+        return 0
+    fi
+
+    if ! is_freerdp_client "$client"; then
+        log_err "Error: Dynamic /monitors resolution requires a FreeRDP client, got '$client'"
+        return 1
+    fi
+
+    local value=${args_ref[monitors_index]#/monitors:}
+    local -a tokens=()
+    local token
+
+    split_list "$value" tokens
+    if ((${#tokens[@]} == 0)); then
+        log_err "Error: /monitors argument must contain at least one 'name:<substring>' or signed position token"
+        return 1
+    fi
+
+    for token in "${tokens[@]}"; do
+        if ! valid_monitor_token "$token"; then
+            log_err "Error: Invalid /monitors token '$token'. Use 'name:<substring>' or a signed position like '+1080+360' or '-1920+0'."
+            return 1
+        fi
+    done
+
+    if ! load_monitor_list "$client" "$env_var_name"; then
+        return 1
+    fi
+
+    local -a resolved=()
+    local monitor_index
+    local id
+    local existing
+
+    for token in "${tokens[@]}"; do
+        if ! resolve_monitor_token "$token" monitor_index; then
+            return 1
+        fi
+        id=${MONITOR_IDS[monitor_index]}
+        for existing in "${resolved[@]}"; do
+            if [[ $existing == "$id" ]]; then
+                log_err "Error: /monitors token '$token' selects monitor '$id' more than once"
+                return 1
+            fi
+        done
+        resolved+=("$id")
+    done
+
+    local joined
+    local resolved_ids
+
+    printf -v joined '%s,' "${resolved[@]}"
+    resolved_ids=${joined%,}
+    args_ref[monitors_index]="/monitors:${resolved_ids}"
+
+    log "Resolved '/monitors:${value}' to '/monitors:${resolved_ids}'"
+}
+
 is_freerdp_client() {
     local name=${1##*/}
 
@@ -473,6 +676,10 @@ start_rdp_session() {
 
     local -a env_vars=()
     build_rdp_env "$client" env_vars
+
+    if ! resolve_monitor_args "$client" args env_vars; then
+        return 1
+    fi
 
     launch_freerdp_session "$client" args env_vars
 }

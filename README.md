@@ -55,6 +55,7 @@ Credential writes use Python DBus by default so the secret is not passed as a co
 
 ## Wayland multi-monitor tips
 
-- Multi-monitor only engages in fullscreen; include `/f` with `/multimon` and your `/monitors:<ids>` selection (avoid `/span`).
+- Multi-monitor only engages in fullscreen; include `/f` with `/multimon` and your `/monitors:` selection (avoid `/span`).
+- `/monitors:` takes monitor matchers instead of numeric IDs: `name:<substring>` (for clients that report monitor names, e.g. `sdl-freerdp3`) and signed `+<x>+<y>` desktop positions such as `+1080+360` or `-1920+0` (all FreeRDP frontends). Numeric IDs are rejected, so migrate existing values. `rdpconn` resolves them at launch from the selected client's `/list:monitor` output, so selections keep working when monitor IDs shift after replugging monitors or restarting the compositor. An unmatched or ambiguous matcher aborts the launch and prints the available monitors; monitor list lines it cannot parse are reported as warnings.
 - On Wayland compositors, X11 clients run via XWayland; if multi-monitor is unstable, limit to a single monitor in `RDP_ARGS_WAYLAND`.
-- Use display-specific args to pick different monitor sets per session type, e.g., `RDP_ARGS_X11=( "/multimon" "/monitors:0,1" "/f" ...)` and `RDP_ARGS_WAYLAND=( "/monitors:0" "/f" ...)`.
+- Use display-specific args to pick different monitor sets per session type, e.g., `RDP_ARGS_X11=( "/multimon" "/monitors:+0+0,+1920+0" "/f" ...)` and `RDP_ARGS_WAYLAND=( "/monitors:name:Example Monitor 1,name:Example Monitor 2" "/f" ...)`.
