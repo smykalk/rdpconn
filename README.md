@@ -1,63 +1,94 @@
-This project is released under the Unlicense. See LICENSE for details.
-
 # rdpconn
 
-`rdpconn` disconnects configured personal VPNs, connects to your organisation VPNs, pulls credentials from KWallet, and launches your configured RDP client with your preferred options.
+`rdpconn` disconnects active personal VPNs, connects organisation VPNs, reads RDP credentials from KWallet, and launches a FreeRDP client. On exit it restores the VPN state it changed.
 
 ## Requirements
 
-- Bash 4.4 or later.
-- Linux environment with `nmcli` and KDE KWallet / `qdbus6`.
+- Linux.
+- Bash 4.4 or later (the script uses `${var@Q}`).
+- NetworkManager with `nmcli`. VPN changes are implemented only through NetworkManager; a missing `nmcli` fails any server entry with a non-empty VPN list.
+- KDE KWallet 6: the `kwalletd6` service and the `kwallet-query` CLI are required to read credentials. No other secret store is supported.
+- A FreeRDP frontend in `PATH` whose name ends in `freerdp` or `freerdp<digits>`, for example `xfreerdp3` or `sdl-freerdp3`. Other clients abort at launch.
+- `qdbus6` for credential management in `rdpconn edit`. `python3` with the `dbus` module is optional; when present it is preferred for writes because the secret is not passed as a process argument.
 
 ## Installation
 
-From the repository root run:
+From the repository root:
 
 ```bash
 ./install.sh
 ```
 
-This copies the script to `$HOME/.local/bin/rdpconn` and installs the default configuration at `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`.
+This copies `rdpconn.sh` to `~/.local/bin/rdpconn` and `rdpconn.conf` to `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`; an existing config is left untouched. `~/.local/bin` must be on `PATH`.
+
+## Usage
+
+```bash
+rdpconn        # pick a server and start a session
+rdpconn edit   # manage servers and credentials
+```
+
+With one server configured it is selected automatically. Otherwise a numbered menu is shown; `e` opens edit mode, and `m` there returns to server selection (`q` quits `rdpconn`).
 
 ## Configuration
 
-Edit `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`. The file shipped with the project contains example values; copy it to your config directory if it is missing.
+`${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf` is sourced as Bash. If it does not exist, `rdpconn.conf` next to the script is used (when running from the repository, the shipped fallback config). All variables below must be defined even when unused, except where marked optional.
 
-Key settings:
+- `SERVERS`: array of `NAME|URL|UP_VPNS|DOWN_VPNS` entries. `NAME` and `URL` must be non-empty and must not contain `|`. `UP_VPNS`/`DOWN_VPNS` are `*` (use the global array), `-` or empty (no VPNs), or a comma-separated list of NetworkManager connection names/UUIDs. The selection menu shows `NAME (URL)`.
+- `UP_VPNS`, `DOWN_VPNS`: global arrays referenced by `*`.
+- `KWALLET`, `KWALLET_FOLDER`: wallet and folder containing one entry per server, keyed by `URL`.
+- `RDP_CLIENTS_X11`, `RDP_CLIENTS_WAYLAND`: ordered client lists. Only the list for the current session type is required, and it must be non-empty. `XDG_SESSION_TYPE=wayland` (case-insensitive) selects the Wayland list; anything else selects X11. Clients whose binary is missing from `PATH` are skipped. `RDP_CLIENTS` is rejected.
+- `RDP_ARGS_X11`, `RDP_ARGS_WAYLAND`: client arguments per session type. Empty arrays are allowed, but both variables must exist.
+- `RDP_ARGS_<CLIENT>` (optional): replaces the session-type arguments for one client. The variable name is the client name uppercased with every character outside `A-Z0-9` replaced by `_`: `sdl-freerdp3` → `RDP_ARGS_SDL_FREERDP3`.
+- `RDP_ENV_<CLIENT>` (optional): array of `VAR=value` entries exported when the client is run or queried for monitors.
+- `RDP_SHARE` (optional): directory shared as `/drive:rdp-share`, created if missing.
 
-- `UP_VPNS`: global array of VPN connection IDs to bring up.
-- `DOWN_VPNS`: global array of VPN connection IDs to bring down.
-- `SERVERS`: list of entries in `NAME|URL|UP_VPNS|DOWN_VPNS` format (lists are comma-separated). Use `*` to apply the global arrays and `-` for none. The menu shows `NAME (URL)`.
-- `KWALLET`, `KWALLET_FOLDER`: wallet and folder that store an entry keyed by `${URL}` with `username:password`.
-- `RDP_CLIENTS_X11`, `RDP_CLIENTS_WAYLAND`: ordered lists of FreeRDP frontends to try for each session type. Clients whose binary is missing from `PATH` are skipped; if a launched client exits with a non-zero status, `rdpconn` asks before trying the next available client. `RDP_CLIENTS` is no longer supported.
-- `RDP_ARGS_X11`, `RDP_ARGS_WAYLAND`: argument sets selected automatically based on `XDG_SESSION_TYPE` (`x11` vs `wayland`). Use these to pick different monitor sets per display system.
-- `RDP_SHARE` (optional): local path to expose via `/drive:rdp-share`; omit to disable drive sharing.
-- `RDP_ARGS_<CLIENT>` (optional): per-client overrides. The variable name is the client name uppercased, with non-alphanumerics replaced by `_`. When set, it replaces the display-specific args for that client.
-- `RDP_ENV_<CLIENT>` (optional): per-client environment variables, e.g., `RDP_ENV_SDL_FREERDP3=("SDL_VIDEODRIVER=wayland")`.
+`rdpconn` always appends `/v:<URL> /u:<username> /p:<password> /d:` (empty domain). Arguments are passed through `/args-from:fd:`, so neither the password nor the other options appear in the process command line. An argument containing a newline aborts the launch. Options that `rdpconn` adds itself cannot be overridden.
 
-After editing the config, run `rdpconn`. The script will apply the VPN changes, fetch credentials, and open the RDP session. Passwords are passed to supported FreeRDP clients through a private file descriptor instead of the process command line. When the RDP client exits, your previous VPN state is restored automatically.
+### Monitor matchers
 
-If the preferred client fails at runtime, `rdpconn` reports its exit status and prompts `Try next client '<next>'? [y/N]`; only an explicit `y` falls back to the next available client, while Enter, any other answer, or a closed stdin stops and exits with the failed client's status. Problems detected before the client is launched, such as an unsupported client name, invalid arguments, or monitor matcher errors, still abort immediately.
+`/monitors:` accepts matchers instead of numeric IDs, in X11 and Wayland sessions alike:
 
-If you are migrating an older config, rename `RDP_CLIENTS` to `RDP_CLIENTS_X11` and add a separate `RDP_CLIENTS_WAYLAND` list.
+- `name:<substring>`: case-insensitive substring of a monitor name; the client must report names (e.g. `sdl-freerdp3`).
+- `+<x>+<y>` or `-<x>+<y>`: exact desktop position, e.g. `+1080+360` or `-1920+0`.
 
-## Editing Servers and Credentials
+`rdpconn` runs `<client> /list:monitor`, rewrites the argument to the client's current numeric IDs, and keeps monitor selections valid across replugs and compositor restarts. It aborts on unmatched or ambiguous matchers (printing the available monitors), duplicate monitor selections, or more than one `/monitors:` argument. Unparsable monitor-list lines are reported as warnings. `/multimon` only engages with `/f`; do not combine it with `/span`.
 
-Run:
+## Credentials
+
+Each server `URL` maps to a KWallet entry whose value is `username:password`. The value is split at the first colon, and both parts must be non-empty; otherwise the credential counts as missing and the launch aborts.
+
+Reads use `kwallet-query`. `rdpconn edit` writes prefer Python DBus (`python3` plus the `dbus` module) and fall back to `qdbus6`, which prints a warning because the secret may briefly appear in process arguments. Presence checks and removals always use `qdbus6`; without it, the edit-mode server list reports every credential as `missing`.
+
+## Editing servers
+
+`rdpconn edit` requires the user config to exist, so run `./install.sh` first. It can add, edit, delete, and list servers, and set or remove credentials.
+
+- Add: blank VPN fields become `*`.
+- Edit: empty input keeps the current value; duplicate URLs and `|` in any field are rejected.
+- Delete: confirms first, then asks whether to remove the matching credential.
+- Only the `SERVERS=(...)` block in the user config is rewritten; the rest of the file, including comments, is preserved. A symlinked config is followed and the target file is rewritten.
+
+## Failure handling and VPN cleanup
+
+- If no configured client is available in `PATH`, the launch fails.
+- A client that exits non-zero or cannot produce a usable monitor list is a runtime failure: `rdpconn` prints the reason and asks `Try next client '<next>'? [y/N]`. Only an explicit `y` tries the next client; anything else, or closed stdin, exits with the failed client's status.
+- Errors before launch, such as an unsupported client name, invalid arguments, unresolvable monitor matchers, or credential problems, abort without prompting.
+- On exit, including on SIGINT/SIGTERM, `rdpconn` disconnects the organisation VPNs it connected and reconnects the personal VPNs it disconnected. VPNs it did not change are left alone, and cleanup failures are warnings.
+
+## Wayland notes
+
+- Multi-monitor requires fullscreen (`/f`).
+- X11 clients run through XWayland on Wayland; if multi-monitor is unstable, restrict `RDP_ARGS_WAYLAND` to a single monitor.
+
+## Tests
 
 ```bash
-rdpconn edit
+./tests/rdpconn_test.sh
 ```
 
-The edit menu can add, edit, delete, and list server entries, plus set or remove matching KWallet credentials. Server edits update the `SERVERS` array in your user config at `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf`; the fallback config shipped with the project is not edited.
+The suite stubs `nmcli`, `kwallet-query`, and the RDP clients, so it needs no VPN, wallet, or desktop session.
 
-Credential entries are stored in the configured `KWALLET` and `KWALLET_FOLDER`, keyed by the server URL. Values must use `username:password` format. Edit mode checks credential presence by key only and does not read stored secret values.
+## License
 
-Credential writes use Python DBus by default so the secret is not passed as a command-line argument. If Python DBus is unavailable, edit mode falls back to `qdbus6` and prints a warning because that path may briefly expose the secret in process arguments.
-
-## Wayland multi-monitor tips
-
-- Multi-monitor only engages in fullscreen; include `/f` with `/multimon` and your `/monitors:` selection (avoid `/span`).
-- `/monitors:` takes monitor matchers instead of numeric IDs: `name:<substring>` (for clients that report monitor names, e.g. `sdl-freerdp3`) and signed `+<x>+<y>` desktop positions such as `+1080+360` or `-1920+0` (all FreeRDP frontends). Numeric IDs are rejected, so migrate existing values. `rdpconn` resolves them at launch from the selected client's `/list:monitor` output, so selections keep working when monitor IDs shift after replugging monitors or restarting the compositor. An unmatched or ambiguous matcher aborts the launch and prints the available monitors; monitor list lines it cannot parse are reported as warnings.
-- On Wayland compositors, X11 clients run via XWayland; if multi-monitor is unstable, limit to a single monitor in `RDP_ARGS_WAYLAND`.
-- Use display-specific args to pick different monitor sets per session type, e.g., `RDP_ARGS_X11=( "/multimon" "/monitors:+0+0,+1920+0" "/f" ...)` and `RDP_ARGS_WAYLAND=( "/monitors:name:Example Monitor 1,name:Example Monitor 2" "/f" ...)`.
+Released under the Unlicense. See `LICENSE`.
