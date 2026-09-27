@@ -895,6 +895,134 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_edit_preserves_servers_block_with_parenthesis_in_comment() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=(
+    # legacy host (old)
+    "Test|server.example|-|-"
+)
+EOF
+
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-'"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
+
+    local closers
+    closers=$(grep -c '^)[[:space:]]*$' "$CONFIG_HOME/rdpconn.conf" || true)
+    [[ $closers -eq 1 ]] || fail "Expected exactly one SERVERS closing paren, found $closers"
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Test (server.example)"
+    assert_contains "$OUTPUT_FILE" "Added (added.example)"
+}
+
+test_edit_preserves_servers_block_with_parenthesis_in_name() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=(
+    "My server (test)|server.example|-|-"
+    "Another|another.example|-|-"
+)
+EOF
+
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-'"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'My server (test)|server.example|-|-'"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Another|another.example|-|-'"
+
+    local closers
+    closers=$(grep -c '^)[[:space:]]*$' "$CONFIG_HOME/rdpconn.conf" || true)
+    [[ $closers -eq 1 ]] || fail "Expected exactly one SERVERS closing paren, found $closers"
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "My server (test) (server.example)"
+    assert_contains "$OUTPUT_FILE" "Another (another.example)"
+    assert_contains "$OUTPUT_FILE" "Added (added.example)"
+}
+
+test_edit_preserves_servers_entries_with_quote_and_parenthesis() {
+    setup_test "${FUNCNAME[0]}_double_quoted"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=(
+    "Dave's server (prod)|dave.example|-|-"
+    "Other|other.example|-|-"
+)
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    assert_success
+    run_rdpconn_edit $'a\nSecond\nsecond.example\n\n-\nn\nq\n'
+    assert_success
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Dave's server (prod) (dave.example)"
+    assert_contains "$OUTPUT_FILE" "Other (other.example)"
+    assert_contains "$OUTPUT_FILE" "Added (added.example)"
+    assert_contains "$OUTPUT_FILE" "Second (second.example)"
+
+    local closers
+    closers=$(grep -c '^)[[:space:]]*$' "$CONFIG_HOME/rdpconn.conf" || true)
+    [[ $closers -eq 1 ]] || fail "Expected exactly one SERVERS closing paren, found $closers"
+
+    setup_test "${FUNCNAME[0]}_single_quoted"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=(
+    'O'\''Brien (home)|obrien.example|-|-'
+    "Other|other.example|-|-"
+)
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    assert_success
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "O'Brien (home) (obrien.example)"
+    assert_contains "$OUTPUT_FILE" "Other (other.example)"
+    assert_contains "$OUTPUT_FILE" "Added (added.example)"
+
+    closers=$(grep -c '^)[[:space:]]*$' "$CONFIG_HOME/rdpconn.conf" || true)
+    [[ $closers -eq 1 ]] || fail "Expected exactly one SERVERS closing paren, found $closers"
+}
+
 test_edit_escapes_special_characters_in_server_entries() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
@@ -991,6 +1119,9 @@ run_test test_edit_mode_clears_after_choice
 run_test test_edit_invalid_nested_choice_does_not_exit
 run_test test_edit_rejects_pipe_in_vpn_fields
 run_test test_edit_escapes_special_characters_in_server_entries
+run_test test_edit_preserves_servers_block_with_parenthesis_in_comment
+run_test test_edit_preserves_servers_block_with_parenthesis_in_name
+run_test test_edit_preserves_servers_entries_with_quote_and_parenthesis
 run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'

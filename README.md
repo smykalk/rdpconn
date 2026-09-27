@@ -4,6 +4,11 @@ This project is released under the Unlicense. See LICENSE for details.
 
 `rdpconn` disconnects configured personal VPNs, connects to your organisation VPNs, pulls credentials from KWallet, and launches your configured RDP client with your preferred options.
 
+## Requirements
+
+- Bash 4.4 or later.
+- Linux environment with `nmcli` and KDE KWallet / `qdbus6`.
+
 ## Installation
 
 From the repository root run:

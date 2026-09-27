@@ -598,6 +598,85 @@ server_url_exists_except() {
     return 1
 }
 
+line_closes_servers_block() {
+    local line=$1
+    local i
+    local ch
+    local next
+    local in_quote=""
+    local ansi_c=0
+    local paren_depth=0
+
+    for ((i = 0; i < ${#line}; i++)); do
+        ch=${line:$i:1}
+
+        if [[ $in_quote == '"' ]]; then
+            if [[ $ch == '"' ]]; then
+                in_quote=""
+            elif [[ $ch == "\\" ]]; then
+                i=$((i + 1))
+            fi
+            continue
+        fi
+
+        if [[ $in_quote == "'" ]]; then
+            if ((ansi_c)) && [[ $ch == "\\" ]]; then
+                i=$((i + 1))
+                continue
+            fi
+            if [[ $ch == "'" ]]; then
+                in_quote=""
+                ansi_c=0
+            fi
+            continue
+        fi
+
+        # Outside quotes a backslash escapes the next character. This covers the
+        # '\'' idiom that ${var@Q} emits for embedded single quotes; without it
+        # the escaped quote toggles the quote state and a ')' in the entry is
+        # mistaken for the end of the SERVERS block.
+        if [[ $ch == "\\" ]]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        # Treat $'...' as ANSI-C quoting and $"..." as plain double quoting so
+        # backslash escapes inside $'...' do not toggle the quote state.
+        if [[ $ch == '$' ]]; then
+            next=${line:$((i + 1)):1}
+            if [[ $next == "'" ]]; then
+                in_quote="'"
+                ansi_c=1
+                i=$((i + 1))
+            elif [[ $next == '"' ]]; then
+                in_quote='"'
+                i=$((i + 1))
+            fi
+            continue
+        fi
+
+        if [[ $ch == '"' || $ch == "'" ]]; then
+            in_quote=$ch
+            continue
+        fi
+
+        if [[ $ch == '#' ]]; then
+            break
+        fi
+
+        if [[ $ch == '(' ]]; then
+            paren_depth=$((paren_depth + 1))
+        elif [[ $ch == ')' ]]; then
+            paren_depth=$((paren_depth - 1))
+            if ((paren_depth <= 0)); then
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
 write_servers_config() {
     local servers_var=$1
     local -n servers_ref=$servers_var
@@ -609,7 +688,7 @@ write_servers_config() {
 
     while IFS= read -r line || [[ -n $line ]]; do
         if ((in_servers)); then
-            if [[ $line == *")"* ]]; then
+            if line_closes_servers_block "$line"; then
                 in_servers=0
             fi
             continue
@@ -622,7 +701,7 @@ write_servers_config() {
             done
             printf ')\n' >>"$tmp"
             wrote=1
-            if [[ $line != *")"* ]]; then
+            if ! line_closes_servers_block "$line"; then
                 in_servers=1
             fi
             continue
