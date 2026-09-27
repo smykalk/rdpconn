@@ -618,7 +618,7 @@ write_servers_config() {
         if [[ $line =~ ^[[:space:]]*SERVERS= ]]; then
             printf 'SERVERS=(\n' >>"$tmp"
             for entry in "${servers_ref[@]}"; do
-                printf '    "%s"\n' "$entry" >>"$tmp"
+                printf '    %s\n' "${entry@Q}" >>"$tmp"
             done
             printf ')\n' >>"$tmp"
             wrote=1

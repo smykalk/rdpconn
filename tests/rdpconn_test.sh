@@ -739,8 +739,8 @@ test_edit_add_server_and_python_credential() {
 
     run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\ny\nalice:secret\nq\n'
     assert_success
-    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
-    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Added|added.example|*|-"'
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-'"
     assert_contains "$KWALLET_LOG" "python-write:kdewallet:RDP:added.example:alice:secret"
     assert_contains "$OUTPUT_FILE" "Saved credential for 'added.example'"
     assert_not_contains "$KWALLET_LOG" "-r added.example"
@@ -763,8 +763,8 @@ test_edit_update_server_keeps_blank_fields() {
 
     run_rdpconn_edit $'e\n1\nRenamed\nrenamed.example\n\npersonal-one\nq\n'
     assert_success
-    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Renamed|renamed.example|-|personal-one"'
-    assert_not_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Renamed|renamed.example|-|personal-one'"
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
 }
 
 test_edit_delete_server_and_credential() {
@@ -774,7 +774,7 @@ test_edit_delete_server_and_credential() {
 
     run_rdpconn_edit $'d\n1\ny\ny\nq\n'
     assert_success
-    assert_not_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
     assert_contains "$KWALLET_LOG" "remove:server.example"
 }
 
@@ -895,6 +895,29 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_edit_escapes_special_characters_in_server_entries() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    local marker="$CURRENT_TEST_TMP/pwned"
+    local name="Bob \"main\" \$(touch $marker) \$server"
+
+    run_rdpconn_edit "a
+$name
+quoted.example
+
+-
+n
+q
+"
+    assert_success
+    [[ ! -e $marker ]] || fail "Config value was executed when sourced"
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" '2) Bob "main" $(touch '
+    assert_contains "$OUTPUT_FILE" '(quoted.example) credential: missing'
+}
+
 test_edit_rejects_pipe_in_vpn_fields() {
     setup_test "${FUNCNAME[0]}_update"
     write_basic_config
@@ -967,6 +990,7 @@ run_test test_edit_mode_clears_on_entry
 run_test test_edit_mode_clears_after_choice
 run_test test_edit_invalid_nested_choice_does_not_exit
 run_test test_edit_rejects_pipe_in_vpn_fields
+run_test test_edit_escapes_special_characters_in_server_entries
 run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'
