@@ -553,27 +553,6 @@ normalize_vpn_field() {
     fi
 }
 
-find_server_index_by_url() {
-    local target=$1
-    local entry
-    local name
-    local url
-    local org_raw
-    local pers_raw
-    local i
-
-    for i in "${!SERVERS[@]}"; do
-        entry=${SERVERS[$i]}
-        parse_server_entry "$entry" name url org_raw pers_raw || return 1
-        if [[ $url == "$target" ]]; then
-            printf '%s' "$i"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
 server_url_exists_except() {
     local target=$1
     local except_index=$2
