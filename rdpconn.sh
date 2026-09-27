@@ -754,6 +754,7 @@ kwallet_delete_entry() {
     local key=$1
     local appid="rdpconn"
     local handle
+    local result
 
     if ! command -v qdbus6 >/dev/null 2>&1; then
         log "Error: qdbus6 is required to remove credentials"
@@ -761,7 +762,14 @@ kwallet_delete_entry() {
     fi
 
     handle=$(kwallet_open_handle "$appid") || return 1
-    qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.removeEntry "$handle" "$KWALLET_FOLDER" "$key" "$appid" >/dev/null
+    if ! result=$(qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.removeEntry "$handle" "$KWALLET_FOLDER" "$key" "$appid"); then
+        log "Error: Failed to remove credential for '$key'"
+        return 1
+    fi
+    if [[ $result != 0 ]]; then
+        log "Error: Failed to remove credential for '$key': $result"
+        return 1
+    fi
     log "Removed credential for '$key'"
 }
 

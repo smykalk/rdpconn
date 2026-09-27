@@ -895,6 +895,27 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_edit_reports_credential_removal_failure() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    printf '%s\n' "server.example" >"$KWALLET_KEYS_FILE"
+    mv "$BIN_DIR/qdbus6" "$BIN_DIR/qdbus6.real"
+    cat >"$BIN_DIR/qdbus6" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${3:-} == "org.kde.KWallet.removeEntry" ]]; then
+    printf 'dbus error\n' >&2
+    exit 1
+fi
+exec "$(dirname "$0")/qdbus6.real" "$@"
+EOF
+    chmod +x "$BIN_DIR/qdbus6"
+
+    run_rdpconn_edit $'d\n1\ny\ny\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Error: Failed to remove credential for 'server.example'"
+    assert_not_contains "$OUTPUT_FILE" "Removed credential"
+}
+
 test_edit_survives_clear_failure() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
@@ -1152,6 +1173,7 @@ run_test test_edit_preserves_servers_block_with_parenthesis_in_name
 run_test test_edit_preserves_servers_entries_with_quote_and_parenthesis
 run_test test_edit_preserves_symlinked_config
 run_test test_edit_survives_clear_failure
+run_test test_edit_reports_credential_removal_failure
 run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'
