@@ -895,6 +895,20 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_edit_survives_clear_failure() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    cat >"$BIN_DIR/clear" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$BIN_DIR/clear"
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "a) Add server"
+}
+
 test_edit_preserves_symlinked_config() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
@@ -1137,6 +1151,7 @@ run_test test_edit_preserves_servers_block_with_parenthesis_in_comment
 run_test test_edit_preserves_servers_block_with_parenthesis_in_name
 run_test test_edit_preserves_servers_entries_with_quote_and_parenthesis
 run_test test_edit_preserves_symlinked_config
+run_test test_edit_survives_clear_failure
 run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'

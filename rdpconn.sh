@@ -1067,7 +1067,7 @@ print_edit_menu() {
 prepare_edit_action() {
     local allow_main_menu=${1:-0}
 
-    clear
+    clear 2>/dev/null || true
     print_edit_menu "$allow_main_menu"
     log ""
 }
@@ -1082,7 +1082,7 @@ edit_menu() {
     local action
     local menu_visible=0
 
-    clear
+    clear 2>/dev/null || true
     while true; do
         if ((menu_visible == 0)); then
             print_edit_menu "$allow_main_menu"
