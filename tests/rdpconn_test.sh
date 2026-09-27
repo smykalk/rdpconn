@@ -895,6 +895,25 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_edit_rejects_pipe_in_vpn_fields() {
+    setup_test "${FUNCNAME[0]}_update"
+    write_basic_config
+
+    run_rdpconn_edit $'e\n1\n\n\nvpn-a|vpn-b\n\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Error: UP_VPNS cannot contain '|'"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" "vpn-a"
+
+    setup_test "${FUNCNAME[0]}_add"
+    write_basic_config
+
+    run_rdpconn_edit $'a\nPiped\npiped.example\n\nvpn-a|vpn-b\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Error: DOWN_VPNS cannot contain '|'"
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" "piped.example"
+}
+
 test_install_respects_xdg_config_home() {
     setup_test "${FUNCNAME[0]}"
     local fake_home="$CURRENT_TEST_TMP/home"
@@ -947,6 +966,7 @@ run_test test_launch_selector_edit_can_return_to_main_menu
 run_test test_edit_mode_clears_on_entry
 run_test test_edit_mode_clears_after_choice
 run_test test_edit_invalid_nested_choice_does_not_exit
+run_test test_edit_rejects_pipe_in_vpn_fields
 run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'

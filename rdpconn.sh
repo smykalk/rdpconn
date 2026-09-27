@@ -532,6 +532,16 @@ validate_server_field() {
     fi
 }
 
+validate_vpn_field() {
+    local label=$1
+    local value=$2
+
+    if [[ $value == *"|"* ]]; then
+        log "Error: ${label} cannot contain '|'"
+        return 1
+    fi
+}
+
 normalize_vpn_field() {
     local value
     value=$(trim_ws "$1")
@@ -825,6 +835,8 @@ edit_add_server() {
 
     validate_server_field "Name" "$name" || return 1
     validate_server_field "URL" "$url" || return 1
+    validate_vpn_field "UP_VPNS" "$up" || return 1
+    validate_vpn_field "DOWN_VPNS" "$down" || return 1
 
     if server_url_exists_except "$url" "-1"; then
         log "Error: Server URL '$url' already exists"
@@ -870,6 +882,8 @@ edit_update_server() {
 
     validate_server_field "Name" "$name" || return 1
     validate_server_field "URL" "$url" || return 1
+    validate_vpn_field "UP_VPNS" "$up" || return 1
+    validate_vpn_field "DOWN_VPNS" "$down" || return 1
 
     if server_url_exists_except "$url" "$index"; then
         log "Error: Server URL '$url' already exists"
