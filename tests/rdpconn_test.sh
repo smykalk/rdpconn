@@ -453,6 +453,37 @@ RDP_ARGS_WAYLAND=("/wayland-default")
 EOF
 }
 
+write_client_config() {
+    local client
+    local clients=""
+    for client in "$@"; do
+        clients+=" \"$client\""
+    done
+
+    cat >"$CONFIG_HOME/rdpconn.conf" <<EOF
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=(${clients})
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+}
+
+write_failing_client() {
+    local name=$1
+    local status=$2
+
+    cat >"$BIN_DIR/$name" <<EOF
+#!/usr/bin/env bash
+exit $status
+EOF
+    chmod +x "$BIN_DIR/$name"
+}
+
 test_secure_launch_hides_password_and_uses_client_args() {
     setup_test "${FUNCNAME[0]}"
     CLIENT_SLEEP=2
@@ -791,6 +822,179 @@ EOF
     run_rdpconn
     assert_failure
     assert_contains "$OUTPUT_FILE" "RDP argument contains a newline"
+}
+
+test_runtime_fallback_confirmed_uses_next_client() {
+    setup_test "${FUNCNAME[0]}"
+    write_failing_client failing-freerdp3 3
+    write_client_config failing-freerdp3 fake-freerdp3
+
+    run_rdpconn $'y\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Using RDP client 'failing-freerdp3' on display mode 'x11'"
+    assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status 3."
+    assert_contains "$OUTPUT_FILE" "Try next client 'fake-freerdp3'? [y/N]: "
+    assert_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3' on display mode 'x11'"
+    assert_contains "$PAYLOAD_FILE" "/v:server.example"
+    assert_contains "$PAYLOAD_FILE" "/p:super-secret"
+}
+
+test_runtime_fallback_declined_exits_with_status() {
+    setup_test "${FUNCNAME[0]}"
+    write_failing_client failing-freerdp3 3
+    write_client_config failing-freerdp3 fake-freerdp3
+
+    run_rdpconn $'n\n'
+    assert_status 3
+    assert_contains "$OUTPUT_FILE" "Fallback cancelled"
+    assert_not_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3'"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when fallback is declined"
+}
+
+test_runtime_fallback_bare_enter_stops() {
+    setup_test "${FUNCNAME[0]}"
+    write_failing_client failing-freerdp3 3
+    write_client_config failing-freerdp3 fake-freerdp3
+
+    run_rdpconn $'\n'
+    assert_status 3
+    assert_contains "$OUTPUT_FILE" "Fallback cancelled"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when fallback is not confirmed"
+}
+
+test_runtime_fallback_eof_stops() {
+    setup_test "${FUNCNAME[0]}"
+    write_failing_client failing-freerdp3 3
+    write_client_config failing-freerdp3 fake-freerdp3
+
+    run_rdpconn ""
+    assert_status 3
+    assert_contains "$OUTPUT_FILE" "Fallback cancelled"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when the fallback prompt cannot be answered"
+}
+
+test_runtime_fallback_exhausts_all_clients() {
+    setup_test "${FUNCNAME[0]}"
+    write_failing_client failing-freerdp3 3
+    write_failing_client also-failing-freerdp3 4
+    write_client_config failing-freerdp3 also-failing-freerdp3
+
+    run_rdpconn $'y\n'
+    assert_status 4
+    assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status 3."
+    assert_contains "$OUTPUT_FILE" "Try next client 'also-failing-freerdp3'? [y/N]: "
+    assert_contains "$OUTPUT_FILE" "RDP client 'also-failing-freerdp3' exited with status 4; no clients left to try"
+}
+
+test_runtime_fallback_skips_missing_binary() {
+    setup_test "${FUNCNAME[0]}"
+    write_failing_client failing-freerdp3 3
+    write_client_config missing-freerdp3 failing-freerdp3 fake-freerdp3
+
+    run_rdpconn $'y\n'
+    assert_success
+    assert_not_contains "$OUTPUT_FILE" "Using RDP client 'missing-freerdp3'"
+    assert_not_contains "$OUTPUT_FILE" "Try next client 'failing-freerdp3'"
+    assert_contains "$OUTPUT_FILE" "Try next client 'fake-freerdp3'? [y/N]: "
+    assert_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3' on display mode 'x11'"
+    assert_contains "$PAYLOAD_FILE" "/v:server.example"
+}
+
+test_prelaunch_error_does_not_prompt_fallback() {
+    setup_test "${FUNCNAME[0]}"
+    write_client_config unsupported-client fake-freerdp3
+
+    run_rdpconn $'y\n'
+    assert_status 1
+    assert_contains "$OUTPUT_FILE" "Unsupported RDP client 'unsupported-client'"
+    assert_not_contains "$OUTPUT_FILE" "Try next client"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched after a pre-launch validation error"
+}
+
+test_monitor_list_failure_offers_fallback() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+EOF
+    cat >"$BIN_DIR/broken-freerdp3" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$BIN_DIR/broken-freerdp3"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("broken-freerdp3" "fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/multimon" "/monitors:+1080+360" "/f")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'y\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Could not parse monitor list from 'broken-freerdp3 /list:monitor'"
+    assert_contains "$OUTPUT_FILE" "RDP client 'broken-freerdp3' could not provide a monitor list."
+    assert_contains "$OUTPUT_FILE" "Try next client 'fake-freerdp3'? [y/N]: "
+    assert_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3' on display mode 'x11'"
+    assert_contains "$PAYLOAD_FILE" "/monitors:0"
+    assert_not_contains "$PAYLOAD_FILE" "+1080+360"
+}
+
+test_monitor_list_failure_exhausted_reports_no_clients_left() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+EOF
+    cat >"$BIN_DIR/broken-freerdp3" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$BIN_DIR/broken-freerdp3"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("broken-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/multimon" "/monitors:+1080+360" "/f")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn ""
+    assert_status 1
+    assert_contains "$OUTPUT_FILE" "RDP client 'broken-freerdp3' could not provide a monitor list; no clients left to try"
+    assert_not_contains "$OUTPUT_FILE" "Try next client"
+}
+
+test_monitor_matcher_errors_do_not_prompt_fallback() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3" "xfreerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:+9999+9999")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'y\n'
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "did not match any monitor"
+    assert_not_contains "$OUTPUT_FILE" "Try next client"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched for unmatched /monitors tokens"
 }
 
 test_monitors_position_tokens_resolve() {
@@ -1477,6 +1681,16 @@ run_test test_rdp_env_and_share_are_passed
 run_test test_validation_errors
 run_test test_credential_errors
 run_test test_launch_rejections
+run_test test_runtime_fallback_confirmed_uses_next_client
+run_test test_runtime_fallback_declined_exits_with_status
+run_test test_runtime_fallback_bare_enter_stops
+run_test test_runtime_fallback_eof_stops
+run_test test_runtime_fallback_exhausts_all_clients
+run_test test_runtime_fallback_skips_missing_binary
+run_test test_prelaunch_error_does_not_prompt_fallback
+run_test test_monitor_list_failure_offers_fallback
+run_test test_monitor_list_failure_exhausted_reports_no_clients_left
+run_test test_monitor_matcher_errors_do_not_prompt_fallback
 run_test test_monitors_position_tokens_resolve
 run_test test_monitors_name_tokens_resolve
 run_test test_monitors_negative_position_tokens_resolve

@@ -171,6 +171,7 @@ ACTIVE_DOWN_VPNS=()
 UP_VPNS_STARTED=()
 SERVER_USERNAME=""
 SERVER_PASSWORD=""
+RDP_FAILURE_DETAIL=""
 
 cleanup() {
     local exit_code=$1
@@ -249,21 +250,27 @@ rdp_clients_var_for_display_mode() {
     fi
 }
 
-select_rdp_client() {
+collect_available_rdp_clients() {
     local display_mode=$1
+    local out_var=$2
+    local -n available_out=$out_var
     local clients_var
     clients_var=$(rdp_clients_var_for_display_mode "$display_mode")
-    local -n rdp_clients="$clients_var"
+    local -n configured_clients="$clients_var"
     local client
-    for client in "${rdp_clients[@]}"; do
+    local -a available_clients=()
+
+    for client in "${configured_clients[@]}"; do
         if command -v "$client" >/dev/null 2>&1; then
-            printf '%s' "$client"
-            return 0
+            available_clients+=("$client")
         fi
     done
 
-    log_err "Error: None of the configured RDP clients for '${display_mode}' are available from ${clients_var}: ${rdp_clients[*]}"
-    return 1
+    available_out=("${available_clients[@]}")
+    if ((${#available_out[@]} == 0)); then
+        log_err "Error: None of the configured RDP clients for '${display_mode}' are available from ${clients_var}: ${configured_clients[*]}"
+        return 1
+    fi
 }
 
 is_connection_active() {
@@ -449,6 +456,7 @@ load_monitor_list() {
 
     if ((${#MONITOR_IDS[@]} == 0)); then
         log_err "Error: Could not parse monitor list from '$client /list:monitor' (exit status $status)"
+        RDP_FAILURE_DETAIL="could not provide a monitor list"
         return 1
     fi
 }
@@ -648,6 +656,9 @@ launch_freerdp_session() {
     fi
 
     exec {args_fd}<&-
+    if ((status != 0)); then
+        RDP_FAILURE_DETAIL="exited with status ${status}"
+    fi
     return "$status"
 }
 
@@ -682,6 +693,60 @@ start_rdp_session() {
     fi
 
     launch_freerdp_session "$client" args env_vars
+}
+
+confirm_client_fallback() {
+    local failed_client=$1
+    local failure_detail=$2
+    local next_client=$3
+    local answer
+
+    log_err "RDP client '${failed_client}' ${failure_detail}."
+    log_err "Try next client '${next_client}'? [y/N]: "
+    if ! read -r answer; then
+        return 1
+    fi
+
+    [[ ${answer,,} == "y" ]]
+}
+
+launch_with_fallback() {
+    local display_mode=$1
+    local server=$2
+    local username=$3
+    local password=$4
+    local clients_var=$5
+    local -n clients=$clients_var
+    local i
+    local client
+    local next_client
+    local status
+
+    for i in "${!clients[@]}"; do
+        client=${clients[$i]}
+        RDP_FAILURE_DETAIL=""
+        log "Using RDP client '${client}' on display mode '${display_mode}'"
+        if start_rdp_session "$client" "$display_mode" "$server" "$username" "$password"; then
+            return 0
+        else
+            status=$?
+        fi
+
+        if [[ -z $RDP_FAILURE_DETAIL ]]; then
+            return "$status"
+        fi
+
+        if ((i + 1 == ${#clients[@]})); then
+            log_err "RDP client '${client}' ${RDP_FAILURE_DETAIL}; no clients left to try"
+            return "$status"
+        fi
+
+        next_client=${clients[$((i + 1))]}
+        if ! confirm_client_fallback "$client" "$RDP_FAILURE_DETAIL" "$next_client"; then
+            log_err "Fallback cancelled"
+            return "$status"
+        fi
+    done
 }
 
 require_user_config_for_edit() {
@@ -1420,14 +1485,12 @@ main() {
         exit 1
     fi
 
-    local rdp_client
-    if ! rdp_client=$(select_rdp_client "$display_mode"); then
+    local -a rdp_clients=()
+    if ! collect_available_rdp_clients "$display_mode" rdp_clients; then
         exit 1
     fi
 
-    log "Using RDP client '$rdp_client' on display mode '$display_mode'"
-
-    start_rdp_session "$rdp_client" "$display_mode" "$server_url" "$SERVER_USERNAME" "$SERVER_PASSWORD"
+    launch_with_fallback "$display_mode" "$server_url" "$SERVER_USERNAME" "$SERVER_PASSWORD" rdp_clients
 }
 
 main "$@"

@@ -29,13 +29,15 @@ Key settings:
 - `DOWN_VPNS`: global array of VPN connection IDs to bring down.
 - `SERVERS`: list of entries in `NAME|URL|UP_VPNS|DOWN_VPNS` format (lists are comma-separated). Use `*` to apply the global arrays and `-` for none. The menu shows `NAME (URL)`.
 - `KWALLET`, `KWALLET_FOLDER`: wallet and folder that store an entry keyed by `${URL}` with `username:password`.
-- `RDP_CLIENTS_X11`, `RDP_CLIENTS_WAYLAND`: ordered lists of FreeRDP frontends to try for each session type. `RDP_CLIENTS` is no longer supported.
+- `RDP_CLIENTS_X11`, `RDP_CLIENTS_WAYLAND`: ordered lists of FreeRDP frontends to try for each session type. Clients whose binary is missing from `PATH` are skipped; if a launched client exits with a non-zero status, `rdpconn` asks before trying the next available client. `RDP_CLIENTS` is no longer supported.
 - `RDP_ARGS_X11`, `RDP_ARGS_WAYLAND`: argument sets selected automatically based on `XDG_SESSION_TYPE` (`x11` vs `wayland`). Use these to pick different monitor sets per display system.
 - `RDP_SHARE` (optional): local path to expose via `/drive:rdp-share`; omit to disable drive sharing.
 - `RDP_ARGS_<CLIENT>` (optional): per-client overrides. The variable name is the client name uppercased, with non-alphanumerics replaced by `_`. When set, it replaces the display-specific args for that client.
 - `RDP_ENV_<CLIENT>` (optional): per-client environment variables, e.g., `RDP_ENV_SDL_FREERDP3=("SDL_VIDEODRIVER=wayland")`.
 
 After editing the config, run `rdpconn`. The script will apply the VPN changes, fetch credentials, and open the RDP session. Passwords are passed to supported FreeRDP clients through a private file descriptor instead of the process command line. When the RDP client exits, your previous VPN state is restored automatically.
+
+If the preferred client fails at runtime, `rdpconn` reports its exit status and prompts `Try next client '<next>'? [y/N]`; only an explicit `y` falls back to the next available client, while Enter, any other answer, or a closed stdin stops and exits with the failed client's status. Problems detected before the client is launched, such as an unsupported client name, invalid arguments, or monitor matcher errors, still abort immediately.
 
 If you are migrating an older config, rename `RDP_CLIENTS` to `RDP_CLIENTS_X11` and add a separate `RDP_CLIENTS_WAYLAND` list.
 
