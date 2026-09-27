@@ -680,11 +680,21 @@ line_closes_servers_block() {
 write_servers_config() {
     local servers_var=$1
     local -n servers_ref=$servers_var
-    local tmp="${CONFIG_FILE}.tmp.$$"
+    local target=$CONFIG_FILE
+    local tmp
     local line
     local in_servers=0
     local wrote=0
     local entry
+
+    if [[ -L $target ]]; then
+        if ! target=$(readlink -f -- "$target"); then
+            log "Error: Failed to resolve symlink '$CONFIG_FILE'"
+            return 1
+        fi
+    fi
+
+    tmp="${target}.tmp.$$"
 
     while IFS= read -r line || [[ -n $line ]]; do
         if ((in_servers)); then
@@ -716,7 +726,7 @@ write_servers_config() {
         return 1
     fi
 
-    mv "$tmp" "$CONFIG_FILE"
+    mv "$tmp" "$target"
     SERVERS=("${servers_ref[@]}")
 }
 

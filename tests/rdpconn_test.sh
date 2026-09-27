@@ -895,6 +895,20 @@ test_edit_invalid_nested_choice_does_not_exit() {
     assert_contains "$OUTPUT_FILE" "Cancelled"
 }
 
+test_edit_preserves_symlinked_config() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    local real_config="$CURRENT_TEST_TMP/dotfiles/rdpconn.conf"
+    mkdir -p "$CURRENT_TEST_TMP/dotfiles"
+    mv "$CONFIG_HOME/rdpconn.conf" "$real_config"
+    ln -s "$real_config" "$CONFIG_HOME/rdpconn.conf"
+
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    assert_success
+    [[ -L "$CONFIG_HOME/rdpconn.conf" ]] || fail "Config symlink was replaced by a regular file"
+    assert_contains "$real_config" "'Added|added.example|*|-'"
+}
+
 test_edit_preserves_servers_block_with_parenthesis_in_comment() {
     setup_test "${FUNCNAME[0]}"
     cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
@@ -1122,6 +1136,7 @@ run_test test_edit_escapes_special_characters_in_server_entries
 run_test test_edit_preserves_servers_block_with_parenthesis_in_comment
 run_test test_edit_preserves_servers_block_with_parenthesis_in_name
 run_test test_edit_preserves_servers_entries_with_quote_and_parenthesis
+run_test test_edit_preserves_symlinked_config
 run_test test_install_respects_xdg_config_home
 
 printf 'rdpconn test suite passed\n'
