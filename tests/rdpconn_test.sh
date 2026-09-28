@@ -767,6 +767,24 @@ EOF
     assert_contains "$OUTPUT_FILE" "RDP_CLIENTS_X11 array is empty"
 }
 
+test_version_flag_reports_version_without_config() {
+    setup_test "${FUNCNAME[0]}"
+    rm -f "$CONFIG_HOME/rdpconn.conf"
+
+    local expected
+    expected=$(sed -n 's/^RDPCONN_VERSION="\(.*\)"$/\1/p' "$REPO_ROOT/rdpconn.sh")
+    [[ -n $expected ]] || fail "Could not read RDPCONN_VERSION from rdpconn.sh"
+
+    set +e
+    env PATH="$BIN_DIR:$PATH" XDG_CONFIG_HOME="$CONFIG_HOME" "$REPO_ROOT/rdpconn.sh" --version >"$OUTPUT_FILE" 2>&1
+    RDP_STATUS=$?
+    set -e
+    assert_success
+    assert_contains "$OUTPUT_FILE" "rdpconn $expected"
+    assert_not_contains "$OUTPUT_FILE" "Configuration file not found"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched for --version"
+}
+
 test_credential_errors() {
     setup_test "${FUNCNAME[0]}_missing"
     write_basic_config
@@ -1679,6 +1697,7 @@ run_test test_vpn_names_with_colon_are_matched_active
 run_test test_explicit_server_vpn_lists_are_trimmed
 run_test test_rdp_env_and_share_are_passed
 run_test test_validation_errors
+run_test test_version_flag_reports_version_without_config
 run_test test_credential_errors
 run_test test_launch_rejections
 run_test test_runtime_fallback_confirmed_uses_next_client

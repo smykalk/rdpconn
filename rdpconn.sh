@@ -10,6 +10,8 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CONFIG_FILE="$CONFIG_HOME/rdpconn.conf"
 DEFAULT_CONFIG_FILE="$SCRIPT_DIR/rdpconn.conf"
 
+RDPCONN_VERSION="1.0.0"
+
 log() {
     printf '%s\n' "$*"
 }
@@ -1412,6 +1414,11 @@ run_edit_mode() {
 }
 
 main() {
+    if [[ ${1:-} == "--version" || ${1:-} == "-v" ]]; then
+        printf 'rdpconn %s\n' "$RDPCONN_VERSION"
+        exit 0
+    fi
+
     if [[ ${1:-} == "edit" ]]; then
         shift
         if (($# > 0)); then

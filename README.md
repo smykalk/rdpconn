@@ -26,9 +26,12 @@ This copies `rdpconn.sh` to `~/.local/bin/rdpconn` and `rdpconn.conf` to `${XDG_
 ```bash
 rdpconn        # pick a server and start a session
 rdpconn edit   # manage servers and credentials
+rdpconn --version
 ```
 
 With one server configured it is selected automatically. Otherwise a numbered menu is shown; `e` opens edit mode, and `m` there returns to server selection (`q` quits `rdpconn`).
+
+`rdpconn --version` prints `RDPCONN_VERSION` from `rdpconn.sh`; bump the constant when tagging a release.
 
 ## Configuration
 
