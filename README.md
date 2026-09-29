@@ -77,7 +77,7 @@ Reads use `kwallet-query`. `rdpconn edit` writes prefer Python DBus (`python3` p
 - If no configured client is available in `PATH`, the launch fails.
 - A client that exits non-zero or cannot produce a usable monitor list is a runtime failure: `rdpconn` prints the reason and asks `Try next client '<next>'? [y/N]`. Only an explicit `y` tries the next client; anything else, or closed stdin, exits with the failed client's status.
 - Errors before launch, such as an unsupported client name, invalid arguments, unresolvable monitor matchers, or credential problems, abort without prompting.
-- On exit, including on SIGINT/SIGTERM, `rdpconn` disconnects the organisation VPNs it connected and reconnects the personal VPNs it disconnected. VPNs it did not change are left alone, and cleanup failures are warnings.
+- On exit, including on SIGINT/SIGTERM, `rdpconn` asks `Disconnect from org VPN '<name>'? [Y/n]` before disconnecting each organisation VPN it connected; `n` keeps it connected. Personal VPNs are reconnected only when every started org VPN was disconnected — if any is kept, they stay down. With closed stdin (no way to ask) it disconnects and reconnects as before. VPNs it did not change are left alone, and cleanup failures are warnings.
 
 ## Wayland notes
 

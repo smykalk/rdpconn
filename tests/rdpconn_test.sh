@@ -607,7 +607,7 @@ RDP_ARGS_X11=("/x11-default")
 RDP_ARGS_WAYLAND=("/wayland-default")
 EOF
 
-    run_rdpconn
+    run_rdpconn $'y\n'
     assert_success
     assert_contains "$NMCLI_LOG" "down:personal-active"
     assert_contains "$NMCLI_LOG" "up:org-inactive"
@@ -616,6 +616,69 @@ EOF
     assert_not_contains "$NMCLI_LOG" "down:personal-inactive"
     assert_not_contains "$NMCLI_LOG" "up:org-active"
     assert_not_contains "$NMCLI_LOG" "down:org-active"
+}
+
+test_cleanup_asks_before_disconnecting_org_vpn() {
+    setup_test "${FUNCNAME[0]}_default"
+    ACTIVE_CONNECTIONS="personal-active,org-active"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("org-active" "org-inactive")
+DOWN_VPNS=("personal-active")
+SERVERS=("Test|server.example|*|*")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Disconnect from org VPN 'org-inactive'? [Y/n]: "
+    assert_contains "$NMCLI_LOG" "down:org-inactive"
+    assert_contains "$NMCLI_LOG" "up:personal-active"
+    assert_not_contains "$OUTPUT_FILE" "Disconnect from org VPN 'org-active'"
+
+    setup_test "${FUNCNAME[0]}_declined"
+    ACTIVE_CONNECTIONS="personal-active,org-active"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("org-active" "org-inactive")
+DOWN_VPNS=("personal-active")
+SERVERS=("Test|server.example|*|*")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'n\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Disconnect from org VPN 'org-inactive'? [Y/n]: "
+    assert_contains "$OUTPUT_FILE" "Keeping org VPN 'org-inactive' connected"
+    assert_contains "$OUTPUT_FILE" "Leaving personal VPN 'personal-active' disconnected: an org VPN is still connected"
+    assert_not_contains "$NMCLI_LOG" "down:org-inactive"
+    assert_not_contains "$NMCLI_LOG" "up:personal-active"
+
+    setup_test "${FUNCNAME[0]}_eof"
+    ACTIVE_CONNECTIONS="personal-active,org-active"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("org-active" "org-inactive")
+DOWN_VPNS=("personal-active")
+SERVERS=("Test|server.example|*|*")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn ""
+    assert_success
+    assert_contains "$NMCLI_LOG" "down:org-inactive"
 }
 
 test_explicit_server_vpn_lists_are_trimmed() {
@@ -633,7 +696,7 @@ RDP_ARGS_X11=("/x11-default")
 RDP_ARGS_WAYLAND=("/wayland-default")
 EOF
 
-    run_rdpconn
+    run_rdpconn $'y\ny\n'
     assert_success
     assert_contains "$NMCLI_LOG" "up:org-one"
     assert_contains "$NMCLI_LOG" "up:org-two"
@@ -1693,6 +1756,7 @@ run_test test_display_mode_and_client_selection
 run_test test_client_fallback_and_no_available_client_error
 run_test test_menu_selection_uses_selected_server
 run_test test_vpn_defaults_and_cleanup
+run_test test_cleanup_asks_before_disconnecting_org_vpn
 run_test test_vpn_names_with_colon_are_matched_active
 run_test test_explicit_server_vpn_lists_are_trimmed
 run_test test_rdp_env_and_share_are_passed

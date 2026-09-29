@@ -175,13 +175,40 @@ SERVER_USERNAME=""
 SERVER_PASSWORD=""
 RDP_FAILURE_DETAIL=""
 
+confirm_org_vpn_disconnect() {
+    local vpn=$1
+    local answer
+
+    log_err "Disconnect from org VPN '${vpn}'? [Y/n]: "
+    if ! read -r answer; then
+        # Cannot ask (closed stdin); disconnect as before.
+        return 0
+    fi
+
+    case ${answer,,} in
+        ""|y|yes)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 cleanup() {
     local exit_code=$1
 
     trap - EXIT INT TERM
 
     local vpn
+    local kept_org=0
     for vpn in "${UP_VPNS_STARTED[@]}"; do
+        if ! confirm_org_vpn_disconnect "$vpn"; then
+            log "Keeping org VPN '$vpn' connected"
+            kept_org=1
+            continue
+        fi
+
         log "Disconnecting from org VPN '$vpn'"
         if ! nmcli connection down id "$vpn" >/dev/null; then
             log "Warning: Failed to disconnect org VPN '$vpn'"
@@ -189,6 +216,11 @@ cleanup() {
     done
 
     for vpn in "${ACTIVE_DOWN_VPNS[@]}"; do
+        if ((kept_org)); then
+            log "Leaving personal VPN '$vpn' disconnected: an org VPN is still connected"
+            continue
+        fi
+
         log "Reconnecting to personal VPN '$vpn'"
         if ! nmcli connection up id "$vpn" >/dev/null; then
             log "Warning: Failed to reconnect personal VPN '$vpn'"
