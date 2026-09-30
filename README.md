@@ -84,6 +84,32 @@ Reads use `kwallet-query`. `rdpconn edit` writes prefer Python DBus (`python3` p
 - Multi-monitor requires fullscreen (`/f`).
 - X11 clients run through XWayland on Wayland; if multi-monitor is unstable, restrict `RDP_ARGS_WAYLAND` to a single monitor.
 
+### SDL client shortcuts
+
+`sdl-freerdp3` handles a few shortcuts itself, so they keep working with a fullscreen multi-monitor session. The modifier is Right Shift by default:
+
+| Shortcut | Action |
+| --- | --- |
+| `RightShift+M` | Minimize all client windows |
+| `RightShift+Enter` | Toggle fullscreen |
+| `RightShift+R` | Toggle resizable state |
+| `RightShift+G` | Toggle keyboard grab |
+| `RightShift+D` | Disconnect the session |
+
+`RightShift+G` toggles the keyboard grab: while it is on, the client inhibits compositor shortcuts and sends key combinations such as `Meta+D` or `Meta+Ctrl+Left/Right` to the remote. A session starts ungrabbed.
+
+The modifier and keys can be changed in `${XDG_CONFIG_HOME:-$HOME/.config}/freerdp/sdl-freerdp.json` (create the file if it does not exist; `sdl-freerdp3 /help` lists all settings):
+
+```json
+{
+    "SDL_KeyModMask": ["KMOD_CTRL", "KMOD_ALT"],
+    "SDL_Minimize": "M",
+    "SDL_Fullscreen": "RETURN"
+}
+```
+
+`SDL_KeyModMask` is an array of SDL_Keymod names (`KMOD_CTRL`, `KMOD_ALT`, `KMOD_RSHIFT`, ...) and the key settings take SDL scancode names (`M`, `RETURN`, `R`, `G`, `D`). An invalid name disables all client shortcuts.
+
 ## Tests
 
 ```bash
