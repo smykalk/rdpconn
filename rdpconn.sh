@@ -10,7 +10,7 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CONFIG_FILE="$CONFIG_HOME/rdpconn.conf"
 DEFAULT_CONFIG_FILE="$SCRIPT_DIR/rdpconn.conf"
 
-RDPCONN_VERSION="1.0.0"
+RDPCONN_VERSION="1.1.0"
 
 log() {
     printf '%s\n' "$*"
