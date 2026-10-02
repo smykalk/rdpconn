@@ -173,6 +173,7 @@ ACTIVE_DOWN_VPNS=()
 UP_VPNS_STARTED=()
 SERVER_USERNAME=""
 SERVER_PASSWORD=""
+SERVER_DOMAIN=""
 RDP_FAILURE_DETAIL=""
 
 confirm_org_vpn_disconnect() {
@@ -360,25 +361,62 @@ read_kwallet_secret() {
     printf '%s' "$value"
 }
 
+# Splits 'username:password' or 'domain\username:password' into its parts.
+# Returns non-zero when the secret has no colon or the domain format is invalid.
+parse_credential_secret() {
+    local secret=$1
+    local -n out_username=$2
+    local -n out_password=$3
+    local -n out_domain=$4
+    local user
+
+    out_username=""
+    out_password=""
+    out_domain=""
+
+    if [[ $secret != *:* ]]; then
+        return 1
+    fi
+
+    user=${secret%%:*}
+    out_password=${secret#*:}
+
+    if [[ $user == *\\* ]]; then
+        out_domain=${user%%\\*}
+        user=${user#*\\}
+
+        if [[ -z $out_domain || -z $user || $user == *\\* ]]; then
+            return 1
+        fi
+    fi
+
+    out_username=$user
+}
+
 retrieve_credentials() {
     local name=$1
     local url=$2
     local secret=""
+    local username=""
+    local password=""
+    local domain=""
 
     secret=$(read_kwallet_secret "$url")
     if [[ -n $secret ]]; then
-        if [[ $secret != *:* ]]; then
-            log "Error: KWallet entry '$url' must be in 'username:password' format"
+        if ! parse_credential_secret "$secret" username password domain; then
+            log "Error: KWallet entry '$url' must be in 'username:password' or 'domain\\username:password' format"
             return 1
         fi
-        SERVER_USERNAME=${secret%%:*}
-        SERVER_PASSWORD=${secret#*:}
     fi
+
+    SERVER_USERNAME=$username
+    SERVER_PASSWORD=$password
+    SERVER_DOMAIN=$domain
 
     if [[ -z $SERVER_USERNAME || -z $SERVER_PASSWORD ]]; then
         log "Error: Failed to retrieve credentials from KWallet for server '$name' ('$url')"
         log "Ensure wallet '$KWALLET', folder '$KWALLET_FOLDER' contains:"
-        log "  - ${url} (format: username:password)"
+        log "  - ${url} (format: username:password or domain\\username:password)"
         return 1
     fi
 
@@ -720,6 +758,7 @@ start_rdp_session() {
     local server=$3
     local username=$4
     local password=$5
+    local domain=$6
 
     local -a args=()
     build_rdp_args "$client" "$display_mode" args
@@ -728,7 +767,7 @@ start_rdp_session() {
         "/v:${server}"
         "/u:${username}"
         "/p:${password}"
-        "/d:"
+        "/d:${domain}"
     )
 
     local share="${RDP_SHARE:-}"
@@ -767,7 +806,8 @@ launch_with_fallback() {
     local server=$2
     local username=$3
     local password=$4
-    local clients_var=$5
+    local domain=$5
+    local clients_var=$6
     local -n clients=$clients_var
     local i
     local client
@@ -778,7 +818,7 @@ launch_with_fallback() {
         client=${clients[$i]}
         RDP_FAILURE_DETAIL=""
         log "Using RDP client '${client}' on display mode '${display_mode}'"
-        if start_rdp_session "$client" "$display_mode" "$server" "$username" "$password"; then
+        if start_rdp_session "$client" "$display_mode" "$server" "$username" "$password" "$domain"; then
             return 0
         else
             status=$?
@@ -1134,12 +1174,15 @@ kwallet_write_qdbus() {
 
 prompt_credential_secret() {
     local -n out=$1
+    local username=""
+    local password=""
+    local domain=""
 
-    read -r -s -p "Enter username:password: " out
+    read -r -s -p "Enter [domain\\]username:password: " out
     printf '\n'
 
-    if [[ -z $out || $out != *:* ]]; then
-        log "Error: credential must be in 'username:password' format"
+    if ! parse_credential_secret "$out" username password domain || [[ -z $username || -z $password ]]; then
+        log "Error: credential must be in 'username:password' or 'domain\\username:password' format"
         return 1
     fi
 }
@@ -1547,7 +1590,7 @@ main() {
         exit 1
     fi
 
-    launch_with_fallback "$display_mode" "$server_url" "$SERVER_USERNAME" "$SERVER_PASSWORD" rdp_clients
+    launch_with_fallback "$display_mode" "$server_url" "$SERVER_USERNAME" "$SERVER_PASSWORD" "$SERVER_DOMAIN" rdp_clients
 }
 
 main "$@"

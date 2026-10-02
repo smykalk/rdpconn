@@ -59,6 +59,17 @@ assert_not_contains() {
     fi
 }
 
+assert_line() {
+    local file=$1
+    local line=$2
+
+    if ! grep -Fxq -- "$line" "$file"; then
+        printf 'Expected to find line %s in %s\n' "$line" "$file" >&2
+        cat "$file" >&2
+        exit 1
+    fi
+}
+
 assert_status() {
     local expected=$1
 
@@ -750,6 +761,50 @@ EOF
     assert_contains "$ENV_FILE" "SDL_VIDEODRIVER=wayland"
 }
 
+test_credential_domain_is_passed() {
+    setup_test "${FUNCNAME[0]}"
+    write_basic_config
+    KWALLET_SECRET='UP\alice:super-secret'
+
+    run_rdpconn
+    assert_success
+    assert_line "$PAYLOAD_FILE" "/u:alice"
+    assert_line "$PAYLOAD_FILE" "/p:super-secret"
+    assert_line "$PAYLOAD_FILE" "/d:UP"
+
+    setup_test "${FUNCNAME[0]}_no_domain"
+    write_basic_config
+
+    run_rdpconn
+    assert_success
+    assert_line "$PAYLOAD_FILE" "/u:alice"
+    assert_line "$PAYLOAD_FILE" "/d:"
+    assert_not_contains "$PAYLOAD_FILE" "/d:UP"
+}
+
+test_edit_rejects_malformed_credentials() {
+    local -a secrets=(
+        '\alice:secret'
+        'UP\:secret'
+        'UP\alice\extra:secret'
+        'alice:'
+        'nopass'
+    )
+    local i
+    local secret
+
+    for i in "${!secrets[@]}"; do
+        secret=${secrets[$i]}
+        setup_test "${FUNCNAME[0]}_$i"
+        write_basic_config
+
+        run_rdpconn_edit $'c\n1\n'"$secret"$'\nq\n'
+        assert_success
+        assert_contains "$OUTPUT_FILE" "credential must be in 'username:password' or 'domain\\username:password' format"
+        assert_not_contains "$KWALLET_LOG" "write:"
+    done
+}
+
 test_validation_errors() {
     setup_test "${FUNCNAME[0]}_missing"
     cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
@@ -861,7 +916,28 @@ test_credential_errors() {
     KWALLET_SECRET="not-a-credential-pair"
     run_rdpconn
     assert_failure
-    assert_contains "$OUTPUT_FILE" "must be in 'username:password' format"
+    assert_contains "$OUTPUT_FILE" "must be in 'username:password' or 'domain\\username:password' format"
+
+    setup_test "${FUNCNAME[0]}_empty_domain"
+    write_basic_config
+    KWALLET_SECRET='\alice:super-secret'
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "must be in 'username:password' or 'domain\\username:password' format"
+
+    setup_test "${FUNCNAME[0]}_empty_user"
+    write_basic_config
+    KWALLET_SECRET='UP\:super-secret'
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "must be in 'username:password' or 'domain\\username:password' format"
+
+    setup_test "${FUNCNAME[0]}_extra_backslash"
+    write_basic_config
+    KWALLET_SECRET='UP\alice\extra:super-secret'
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "must be in 'username:password' or 'domain\\username:password' format"
 
     setup_test "${FUNCNAME[0]}_query_failure"
     write_basic_config
@@ -1791,6 +1867,8 @@ run_test test_cleanup_asks_before_disconnecting_org_vpn
 run_test test_vpn_names_with_colon_are_matched_active
 run_test test_explicit_server_vpn_lists_are_trimmed
 run_test test_rdp_env_and_share_are_passed
+run_test test_credential_domain_is_passed
+run_test test_edit_rejects_malformed_credentials
 run_test test_validation_errors
 run_test test_version_flag_reports_version_without_config
 run_test test_credential_errors

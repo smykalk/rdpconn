@@ -46,7 +46,7 @@ With one server configured it is selected automatically. Otherwise a numbered me
 - `RDP_ENV_<CLIENT>` (optional): array of `VAR=value` entries exported when the client is run or queried for monitors.
 - `RDP_SHARE` (optional): directory shared as `/drive:rdp-share`, created if missing.
 
-`rdpconn` always appends `/v:<URL> /u:<username> /p:<password> /d:` (empty domain). Arguments are passed through `/args-from:fd:`, so neither the password nor the other options appear in the process command line. An argument containing a newline aborts the launch. Options that `rdpconn` adds itself cannot be overridden.
+`rdpconn` always appends `/v:<URL> /u:<username> /p:<password> /d:<domain>`, where `<domain>` comes from the credential and is empty when the credential has none. Arguments are passed through `/args-from:fd:`, so neither the password nor the other options appear in the process command line. An argument containing a newline aborts the launch. Options that `rdpconn` adds itself cannot be overridden.
 
 ### Monitor matchers
 
@@ -59,7 +59,9 @@ With one server configured it is selected automatically. Otherwise a numbered me
 
 ## Credentials
 
-Each server `URL` maps to a KWallet entry whose value is `username:password`. The value is split at the first colon, and both parts must be non-empty; otherwise the credential counts as missing and the launch aborts.
+Each server `URL` maps to a KWallet entry whose value is `username:password` or `domain\username:password`. The value is split at the first colon, and both parts must be non-empty; otherwise the credential counts as missing and the launch aborts.
+
+The username may be written as `username` or `domain\username`; the domain is split at the first backslash and passed as `/d:<domain>`, while the username alone is passed to `/u:`. `rdpconn edit` rejects credentials with an empty domain, an empty username, an empty password, or more than one backslash when they are entered, and the launch aborts if such a credential is found in the wallet.
 
 Reads use `kwallet-query`. `rdpconn edit` writes prefer Python DBus (`python3` plus the `dbus` module) and fall back to `qdbus6`, which prints a warning because the secret may briefly appear in process arguments. Presence checks and removals always use `qdbus6`; without it, the edit-mode server list reports every credential as `missing`.
 
