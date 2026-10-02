@@ -907,13 +907,13 @@ EOF
 
 test_runtime_fallback_confirmed_uses_next_client() {
     setup_test "${FUNCNAME[0]}"
-    write_failing_client failing-freerdp3 3
+    write_failing_client failing-freerdp3 130
     write_client_config failing-freerdp3 fake-freerdp3
 
     run_rdpconn $'y\n'
     assert_success
     assert_contains "$OUTPUT_FILE" "Using RDP client 'failing-freerdp3' on display mode 'x11'"
-    assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status 3."
+    assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status 130."
     assert_contains "$OUTPUT_FILE" "Try next client 'fake-freerdp3'? [y/N]: "
     assert_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3' on display mode 'x11'"
     assert_contains "$PAYLOAD_FILE" "/v:server.example"
@@ -922,11 +922,11 @@ test_runtime_fallback_confirmed_uses_next_client() {
 
 test_runtime_fallback_declined_exits_with_status() {
     setup_test "${FUNCNAME[0]}"
-    write_failing_client failing-freerdp3 3
+    write_failing_client failing-freerdp3 130
     write_client_config failing-freerdp3 fake-freerdp3
 
     run_rdpconn $'n\n'
-    assert_status 3
+    assert_status 130
     assert_contains "$OUTPUT_FILE" "Fallback cancelled"
     assert_not_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3'"
     [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when fallback is declined"
@@ -934,42 +934,42 @@ test_runtime_fallback_declined_exits_with_status() {
 
 test_runtime_fallback_bare_enter_stops() {
     setup_test "${FUNCNAME[0]}"
-    write_failing_client failing-freerdp3 3
+    write_failing_client failing-freerdp3 130
     write_client_config failing-freerdp3 fake-freerdp3
 
     run_rdpconn $'\n'
-    assert_status 3
+    assert_status 130
     assert_contains "$OUTPUT_FILE" "Fallback cancelled"
     [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when fallback is not confirmed"
 }
 
 test_runtime_fallback_eof_stops() {
     setup_test "${FUNCNAME[0]}"
-    write_failing_client failing-freerdp3 3
+    write_failing_client failing-freerdp3 130
     write_client_config failing-freerdp3 fake-freerdp3
 
     run_rdpconn ""
-    assert_status 3
+    assert_status 130
     assert_contains "$OUTPUT_FILE" "Fallback cancelled"
     [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched when the fallback prompt cannot be answered"
 }
 
 test_runtime_fallback_exhausts_all_clients() {
     setup_test "${FUNCNAME[0]}"
-    write_failing_client failing-freerdp3 3
-    write_failing_client also-failing-freerdp3 4
+    write_failing_client failing-freerdp3 130
+    write_failing_client also-failing-freerdp3 131
     write_client_config failing-freerdp3 also-failing-freerdp3
 
     run_rdpconn $'y\n'
-    assert_status 4
-    assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status 3."
+    assert_status 131
+    assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status 130."
     assert_contains "$OUTPUT_FILE" "Try next client 'also-failing-freerdp3'? [y/N]: "
-    assert_contains "$OUTPUT_FILE" "RDP client 'also-failing-freerdp3' exited with status 4; no clients left to try"
+    assert_contains "$OUTPUT_FILE" "RDP client 'also-failing-freerdp3' exited with status 131; no clients left to try"
 }
 
 test_runtime_fallback_skips_missing_binary() {
     setup_test "${FUNCNAME[0]}"
-    write_failing_client failing-freerdp3 3
+    write_failing_client failing-freerdp3 130
     write_client_config missing-freerdp3 failing-freerdp3 fake-freerdp3
 
     run_rdpconn $'y\n'
@@ -979,6 +979,37 @@ test_runtime_fallback_skips_missing_binary() {
     assert_contains "$OUTPUT_FILE" "Try next client 'fake-freerdp3'? [y/N]: "
     assert_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3' on display mode 'x11'"
     assert_contains "$PAYLOAD_FILE" "/v:server.example"
+}
+
+test_runtime_session_end_does_not_prompt_fallback() {
+    local status
+    for status in 1 2 3 4 5 11 12; do
+        setup_test "${FUNCNAME[0]}_${status}"
+        write_failing_client failing-freerdp3 "$status"
+        write_client_config failing-freerdp3 fake-freerdp3
+
+        run_rdpconn $'y\n'
+        assert_success
+        assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' session ended (exit status ${status})"
+        assert_not_contains "$OUTPUT_FILE" "Try next client"
+        assert_not_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3'"
+        [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched after session end status ${status}"
+    done
+}
+
+test_runtime_client_failure_still_prompts_fallback() {
+    local status
+    for status in 6 7 9 10 131; do
+        setup_test "${FUNCNAME[0]}_${status}"
+        write_failing_client failing-freerdp3 "$status"
+        write_client_config failing-freerdp3 fake-freerdp3
+
+        run_rdpconn $'y\n'
+        assert_success
+        assert_contains "$OUTPUT_FILE" "RDP client 'failing-freerdp3' exited with status ${status}."
+        assert_contains "$OUTPUT_FILE" "Try next client 'fake-freerdp3'? [y/N]: "
+        assert_contains "$OUTPUT_FILE" "Using RDP client 'fake-freerdp3' on display mode 'x11'"
+    done
 }
 
 test_prelaunch_error_does_not_prompt_fallback() {
@@ -1770,6 +1801,8 @@ run_test test_runtime_fallback_bare_enter_stops
 run_test test_runtime_fallback_eof_stops
 run_test test_runtime_fallback_exhausts_all_clients
 run_test test_runtime_fallback_skips_missing_binary
+run_test test_runtime_session_end_does_not_prompt_fallback
+run_test test_runtime_client_failure_still_prompts_fallback
 run_test test_prelaunch_error_does_not_prompt_fallback
 run_test test_monitor_list_failure_offers_fallback
 run_test test_monitor_list_failure_exhausted_reports_no_clients_left

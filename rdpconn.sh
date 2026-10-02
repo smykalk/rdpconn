@@ -641,6 +641,20 @@ is_freerdp_client() {
     [[ $name =~ freerdp([0-9]+)?$ ]]
 }
 
+# FreeRDP 2.x/3.x exit statuses 1-5, 11 and 12 denote a remote session end
+# (disconnect, logoff, idle or logon timeout, connection replaced, user
+# disconnect/logoff), not a client failure, so they must not trigger the
+# client fallback prompt. The X11 frontend passes the protocol-independent
+# ERRINFO codes through; the SDL frontend only translates a user logoff (to
+# 11, or 2 via the disconnect ultimatum) and reports the other session-end
+# causes as 131, which cannot be told apart from a connection failure.
+is_session_end_status() {
+    case $1 in
+        1 | 2 | 3 | 4 | 5 | 11 | 12) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 build_freerdp_args_payload() {
     local -n in=$1
     local -n out=$2
@@ -691,6 +705,10 @@ launch_freerdp_session() {
 
     exec {args_fd}<&-
     if ((status != 0)); then
+        if is_session_end_status "$status"; then
+            log "RDP client '${client}' session ended (exit status ${status}); treating this as a normal disconnect"
+            return 0
+        fi
         RDP_FAILURE_DETAIL="exited with status ${status}"
     fi
     return "$status"
