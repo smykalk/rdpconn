@@ -37,7 +37,8 @@ With one server configured it is selected automatically. Otherwise a numbered me
 
 `${XDG_CONFIG_HOME:-$HOME/.config}/rdpconn.conf` is sourced as Bash. If it does not exist, `rdpconn.conf` next to the script is used (when running from the repository, the shipped fallback config). All variables below must be defined even when unused, except where marked optional.
 
-- `SERVERS`: array of `NAME|URL|UP_VPNS|DOWN_VPNS` entries. `NAME` and `URL` must be non-empty and must not contain `|`. `UP_VPNS`/`DOWN_VPNS` are `*` (use the global array), `-` or empty (no VPNs), or a comma-separated list of NetworkManager connection names/UUIDs. The selection menu shows `NAME (URL)`.
+- `SERVERS`: array of `NAME|URL|UP_VPNS|DOWN_VPNS[|EXTRA_ARGS]` entries. `NAME` and `URL` must be non-empty and must not contain `|`. `UP_VPNS`/`DOWN_VPNS` are `*` (use the global array), `-` or empty (no VPNs), or a comma-separated list of NetworkManager connection names/UUIDs. The selection menu shows `NAME (URL)`.
+- `EXTRA_ARGS` (optional fifth field): extra client arguments for this server only, separated by `;` (so an argument cannot contain `;`). Each argument must start with a `/`, `+` or `-` sigil. They are appended after the session-type or per-client arguments and are the place for per-destination overrides such as `/auth-pkg-list:!kerberos`. `/v:`, `/u:` and `/p:` are rejected, and at most one `/d:<domain>` is allowed; an explicit `/d:` overrides the domain from the credential (or the empty default).
 - `UP_VPNS`, `DOWN_VPNS`: global arrays referenced by `*`.
 - `KWALLET`, `KWALLET_FOLDER`: wallet and folder containing one entry per server, keyed by `URL`.
 - `RDP_CLIENTS_X11`, `RDP_CLIENTS_WAYLAND`: ordered client lists. Only the list for the current session type is required, and it must be non-empty. `XDG_SESSION_TYPE=wayland` (case-insensitive) selects the Wayland list; anything else selects X11. Clients whose binary is missing from `PATH` are skipped. `RDP_CLIENTS` is rejected.
@@ -46,7 +47,7 @@ With one server configured it is selected automatically. Otherwise a numbered me
 - `RDP_ENV_<CLIENT>` (optional): array of `VAR=value` entries exported when the client is run or queried for monitors.
 - `RDP_SHARE` (optional): directory shared as `/drive:rdp-share`, created if missing.
 
-`rdpconn` always appends `/v:<URL> /u:<username> /p:<password> /d:<domain>`, where `<domain>` comes from the credential and is empty when the credential has none. Arguments are passed through `/args-from:fd:`, so neither the password nor the other options appear in the process command line. An argument containing a newline aborts the launch. Options that `rdpconn` adds itself cannot be overridden.
+`rdpconn` always appends `/v:<URL> /u:<username> /p:<password>`. It appends `/d:<domain>`, where `<domain>` comes from the credential and is empty when the credential has none, unless a `/d:` argument is already configured in `RDP_ARGS_<...>` or the selected server's `EXTRA_ARGS`; configuring more than one `/d:` aborts the launch. Arguments are passed through `/args-from:fd:`, so neither the password nor the other options appear in the process command line. An argument containing a newline aborts the launch. Options that `rdpconn` adds itself cannot be overridden, except the domain.
 
 ### Monitor matchers
 
@@ -55,7 +56,7 @@ With one server configured it is selected automatically. Otherwise a numbered me
 - `name:<substring>`: case-insensitive substring of a monitor name; the client must report names (e.g. `sdl-freerdp3`).
 - `+<x>+<y>` or `-<x>+<y>`: exact desktop position, e.g. `+1080+360` or `-1920+0`.
 
-`rdpconn` runs `<client> /list:monitor`, rewrites the argument to the client's current numeric IDs, and keeps monitor selections valid across replugs and compositor restarts. It aborts on unmatched or ambiguous matchers (printing the available monitors), duplicate monitor selections, or more than one `/monitors:` argument. Unparsable monitor-list lines are reported as warnings. `/multimon` only engages with `/f`; do not combine it with `/span`.
+`rdpconn` runs `<client> /list:monitor`, rewrites the argument to the client's current numeric IDs, and keeps monitor selections valid across replugs and compositor restarts. It aborts on unmatched or ambiguous matchers (printing the available monitors), duplicate monitor selections, or more than one monitor argument across all argument sources, including a server's `EXTRA_ARGS`; `/monitors:`, `-monitors:` and `+monitors:` are recognized as the same argument. Unparsable monitor-list lines are reported as warnings. `/multimon` only engages with `/f`; do not combine it with `/span`.
 
 ## Credentials
 
@@ -69,10 +70,11 @@ Reads use `kwallet-query`. `rdpconn edit` writes prefer Python DBus (`python3` p
 
 `rdpconn edit` requires the user config to exist, so run `./install.sh` first. It can add, edit, delete, and list servers, and set or remove credentials.
 
-- Add: blank VPN fields become `*`.
-- Edit: empty input keeps the current value; duplicate URLs and `|` in any field are rejected.
+- Add: blank VPN fields become `*`; the extra-arguments field takes `;`-separated client arguments.
+- Edit: empty input keeps the current value and `-` clears the extra arguments; duplicate URLs, `|` in any field, and reserved or malformed extra arguments are rejected.
 - Delete: confirms first, then asks whether to remove the matching credential.
 - Only the `SERVERS=(...)` block in the user config is rewritten; the rest of the file, including comments, is preserved. A symlinked config is followed and the target file is rewritten.
+- The server list shows each server's extra arguments when present.
 
 ## Failure handling and VPN cleanup
 

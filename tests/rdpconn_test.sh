@@ -70,6 +70,20 @@ assert_line() {
     fi
 }
 
+assert_line_count() {
+    local file=$1
+    local pattern=$2
+    local expected=$3
+    local count
+
+    count=$(grep -Fxc -- "$pattern" "$file" || true)
+    if [[ $count != "$expected" ]]; then
+        printf 'Expected %s line(s) equal to %s in %s, found %s\n' "$expected" "$pattern" "$file" "$count" >&2
+        cat "$file" >&2
+        exit 1
+    fi
+}
+
 assert_status() {
     local expected=$1
 
@@ -805,6 +819,307 @@ test_edit_rejects_malformed_credentials() {
     done
 }
 
+test_server_extra_args_are_passed() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/auth-pkg-list:!kerberos;/gfx:avc420,progressive")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_contains "$PAYLOAD_FILE" "/auth-pkg-list:!kerberos"
+    assert_contains "$PAYLOAD_FILE" "/gfx:avc420,progressive"
+    assert_line_count "$PAYLOAD_FILE" "/d:" 1
+}
+
+test_server_extra_args_are_per_destination() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("First|first.example|-|-|/first-arg" "Second|second.example|-|-|/second-arg")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn $'2\n'
+    assert_success
+    assert_contains "$PAYLOAD_FILE" "/second-arg"
+    assert_not_contains "$PAYLOAD_FILE" "/first-arg"
+}
+
+test_server_extra_args_domain_replaces_default() {
+    setup_test "${FUNCNAME[0]}_slash"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/d:UP")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_line_count "$PAYLOAD_FILE" "/d:UP" 1
+    assert_line_count "$PAYLOAD_FILE" "/d:" 0
+
+    setup_test "${FUNCNAME[0]}_dash"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|-d:UP")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_line_count "$PAYLOAD_FILE" "-d:UP" 1
+    assert_line_count "$PAYLOAD_FILE" "/d:" 0
+
+    setup_test "${FUNCNAME[0]}_plus"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|+d:UP")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_line_count "$PAYLOAD_FILE" "+d:UP" 1
+    assert_line_count "$PAYLOAD_FILE" "/d:" 0
+
+    setup_test "${FUNCNAME[0]}_credential_domain"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/d:OTHER")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    KWALLET_SECRET='UP\alice:super-secret'
+
+    run_rdpconn
+    assert_success
+    assert_line_count "$PAYLOAD_FILE" "/d:OTHER" 1
+    assert_line_count "$PAYLOAD_FILE" "/d:UP" 0
+}
+
+test_server_extra_args_validation_errors() {
+    setup_test "${FUNCNAME[0]}_reserved"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/v:other.example")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "reserved option '/v:other.example'"
+
+    setup_test "${FUNCNAME[0]}_bare_domain"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/d")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "must use the '/d:<domain>' form"
+
+    setup_test "${FUNCNAME[0]}_sigilless_domain"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|d:UP")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "arguments must start with '/', '+' or '-'"
+
+    setup_test "${FUNCNAME[0]}_duplicate_domain"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/d:A;/d:B")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "cannot contain more than one /d: argument"
+
+    setup_test "${FUNCNAME[0]}_bare_sigil"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|-")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "does not name an option"
+
+    setup_test "${FUNCNAME[0]}_empty_field"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "EXTRA_ARGS cannot be empty"
+
+    setup_test "${FUNCNAME[0]}_extra_field"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/a|/b")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Invalid server entry"
+
+    setup_test "${FUNCNAME[0]}_empty_token"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|;;")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "must contain at least one non-empty argument"
+
+    setup_test "${FUNCNAME[0]}_newline"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/cert:ignore
+;/auth-pkg-list:!kerberos")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Server entries cannot contain newlines"
+}
+
+test_server_extra_args_multiple_domains_abort() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/d:UP")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/d:OTHER")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Multiple /d: arguments are not supported"
+}
+
+test_server_extra_args_monitors_conflict() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/monitors:+0+0")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:+1080+360")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Multiple /monitors arguments are not supported"
+}
+
 test_validation_errors() {
     setup_test "${FUNCNAME[0]}_missing"
     cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
@@ -1410,6 +1725,49 @@ EOF
     assert_failure
     assert_contains "$OUTPUT_FILE" "Multiple /monitors arguments are not supported"
     [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched with multiple /monitors arguments"
+
+    setup_test "${FUNCNAME[0]}_multiple_sigils"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|-monitors:+1920+0")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/monitors:+0+0")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_failure
+    assert_contains "$OUTPUT_FILE" "Multiple /monitors arguments are not supported"
+    [[ ! -f $ARGV_FILE ]] || fail "Client must not be launched with multiple /monitors arguments"
+}
+
+test_monitors_alternate_sigils_resolve() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$MONITOR_LIST_FILE" <<'EOF'
+      * [0] 1920x1080 +1080+360
+        [1] 1920x1080 +3000+360
+EOF
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|-monitors:+1080+360")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn
+    assert_success
+    assert_contains "$OUTPUT_FILE" "Resolved '-monitors:+1080+360' to '/monitors:0'"
+    assert_contains "$PAYLOAD_FILE" "/monitors:0"
+    assert_not_contains "$PAYLOAD_FILE" "+1080+360"
 }
 
 test_monitors_unparsable_lines_are_reported() {
@@ -1453,10 +1811,10 @@ test_edit_add_server_and_python_credential() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
 
-    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\ny\nalice:secret\nq\n'
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\n/auth-pkg-list:!kerberos\ny\nalice:secret\nq\n'
     assert_success
     assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
-    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-'"
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-|/auth-pkg-list:!kerberos'"
     assert_contains "$KWALLET_LOG" "python-write:kdewallet:RDP:added.example:alice:secret"
     assert_contains "$OUTPUT_FILE" "Saved credential for 'added.example'"
     assert_not_contains "$KWALLET_LOG" "-r added.example"
@@ -1473,14 +1831,62 @@ test_edit_list_marks_credentials_without_reading_values() {
     assert_not_contains "$KWALLET_LOG" "-r server.example"
 }
 
+test_edit_list_shows_server_extra_args() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/auth-pkg-list:!kerberos")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn_edit $'l\nq\n'
+    assert_success
+    assert_contains "$OUTPUT_FILE" "args: /auth-pkg-list:!kerberos"
+}
+
 test_edit_update_server_keeps_blank_fields() {
     setup_test "${FUNCNAME[0]}"
     write_basic_config
 
-    run_rdpconn_edit $'e\n1\nRenamed\nrenamed.example\n\npersonal-one\nq\n'
+    run_rdpconn_edit $'e\n1\nRenamed\nrenamed.example\n\npersonal-one\n\nq\n'
     assert_success
     assert_contains "$CONFIG_HOME/rdpconn.conf" "'Renamed|renamed.example|-|personal-one'"
     assert_not_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
+}
+
+test_edit_update_server_changes_extra_args() {
+    setup_test "${FUNCNAME[0]}"
+    cat >"$CONFIG_HOME/rdpconn.conf" <<'EOF'
+UP_VPNS=("unused-up")
+DOWN_VPNS=("unused-down")
+SERVERS=("Test|server.example|-|-|/old-arg")
+KWALLET="kdewallet"
+KWALLET_FOLDER="RDP"
+RDP_CLIENTS_X11=("fake-freerdp3")
+RDP_CLIENTS_WAYLAND=("sdl-freerdp3")
+RDP_ARGS_X11=("/x11-default")
+RDP_ARGS_WAYLAND=("/wayland-default")
+EOF
+
+    run_rdpconn_edit $'e\n1\n\n\n\n\n/new-arg\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-|/new-arg'"
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" "/old-arg"
+
+    run_rdpconn_edit $'e\n1\n\n\n\n\n\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-|/new-arg'"
+
+    run_rdpconn_edit $'e\n1\n\n\n\n\n-\nq\n'
+    assert_success
+    assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
+    assert_not_contains "$CONFIG_HOME/rdpconn.conf" "/new-arg"
 }
 
 test_edit_delete_server_and_credential() {
@@ -1654,7 +2060,7 @@ test_edit_preserves_symlinked_config() {
     mv "$CONFIG_HOME/rdpconn.conf" "$real_config"
     ln -s "$real_config" "$CONFIG_HOME/rdpconn.conf"
 
-    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\n\nn\nq\n'
     assert_success
     [[ -L "$CONFIG_HOME/rdpconn.conf" ]] || fail "Config symlink was replaced by a regular file"
     assert_contains "$real_config" "'Added|added.example|*|-'"
@@ -1677,7 +2083,7 @@ SERVERS=(
 )
 EOF
 
-    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\n\nn\nq\n'
     assert_success
     assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-'"
     assert_contains "$CONFIG_HOME/rdpconn.conf" "'Test|server.example|-|-'"
@@ -1709,7 +2115,7 @@ SERVERS=(
 )
 EOF
 
-    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\n\nn\nq\n'
     assert_success
     assert_contains "$CONFIG_HOME/rdpconn.conf" "'Added|added.example|*|-'"
     assert_contains "$CONFIG_HOME/rdpconn.conf" "'My server (test)|server.example|-|-'"
@@ -1743,9 +2149,9 @@ RDP_ARGS_X11=("/x11-default")
 RDP_ARGS_WAYLAND=("/wayland-default")
 EOF
 
-    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\n\nn\nq\n'
     assert_success
-    run_rdpconn_edit $'a\nSecond\nsecond.example\n\n-\nn\nq\n'
+    run_rdpconn_edit $'a\nSecond\nsecond.example\n\n-\n\nn\nq\n'
     assert_success
 
     run_rdpconn_edit $'l\nq\n'
@@ -1775,7 +2181,7 @@ RDP_ARGS_X11=("/x11-default")
 RDP_ARGS_WAYLAND=("/wayland-default")
 EOF
 
-    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\nn\nq\n'
+    run_rdpconn_edit $'a\nAdded\nadded.example\n\n-\n\nn\nq\n'
     assert_success
 
     run_rdpconn_edit $'l\nq\n'
@@ -1799,6 +2205,7 @@ $name
 quoted.example
 
 -
+
 n
 q
 "
@@ -1815,7 +2222,7 @@ test_edit_rejects_pipe_in_vpn_fields() {
     setup_test "${FUNCNAME[0]}_update"
     write_basic_config
 
-    run_rdpconn_edit $'e\n1\n\n\nvpn-a|vpn-b\n\nq\n'
+    run_rdpconn_edit $'e\n1\n\n\nvpn-a|vpn-b\n\n\nq\n'
     assert_success
     assert_contains "$OUTPUT_FILE" "Error: UP_VPNS cannot contain '|'"
     assert_contains "$CONFIG_HOME/rdpconn.conf" '"Test|server.example|-|-"'
@@ -1824,7 +2231,7 @@ test_edit_rejects_pipe_in_vpn_fields() {
     setup_test "${FUNCNAME[0]}_add"
     write_basic_config
 
-    run_rdpconn_edit $'a\nPiped\npiped.example\n\nvpn-a|vpn-b\nq\n'
+    run_rdpconn_edit $'a\nPiped\npiped.example\n\nvpn-a|vpn-b\n\nq\n'
     assert_success
     assert_contains "$OUTPUT_FILE" "Error: DOWN_VPNS cannot contain '|'"
     assert_not_contains "$CONFIG_HOME/rdpconn.conf" "piped.example"
@@ -1869,6 +2276,12 @@ run_test test_explicit_server_vpn_lists_are_trimmed
 run_test test_rdp_env_and_share_are_passed
 run_test test_credential_domain_is_passed
 run_test test_edit_rejects_malformed_credentials
+run_test test_server_extra_args_are_passed
+run_test test_server_extra_args_are_per_destination
+run_test test_server_extra_args_domain_replaces_default
+run_test test_server_extra_args_validation_errors
+run_test test_server_extra_args_multiple_domains_abort
+run_test test_server_extra_args_monitors_conflict
 run_test test_validation_errors
 run_test test_version_flag_reports_version_without_config
 run_test test_credential_errors
@@ -1890,13 +2303,16 @@ run_test test_monitors_name_tokens_resolve
 run_test test_monitors_negative_position_tokens_resolve
 run_test test_monitors_invalid_or_unmatched_tokens_abort
 run_test test_monitors_duplicate_and_multiple_args_abort
+run_test test_monitors_alternate_sigils_resolve
 run_test test_monitors_unparsable_lines_are_reported
 run_test test_monitors_name_tokens_require_named_client
 run_test test_monitors_ambiguous_name_tokens_abort
 run_test test_bundled_fallback_config_validates
 run_test test_edit_add_server_and_python_credential
 run_test test_edit_list_marks_credentials_without_reading_values
+run_test test_edit_list_shows_server_extra_args
 run_test test_edit_update_server_keeps_blank_fields
+run_test test_edit_update_server_changes_extra_args
 run_test test_edit_delete_server_and_credential
 run_test test_edit_set_credential_bash_fallback_warns
 run_test test_edit_nested_server_choice_can_back_out

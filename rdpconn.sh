@@ -33,21 +33,47 @@ parse_server_entry() {
     local -n out_url=$3
     local -n out_org_raw=$4
     local -n out_pers_raw=$5
-    local extra
+    # Avoid the name 'extra_raw': it would shadow the caller's variable that
+    # the sixth nameref parameter points at.
+    local extra_field=""
+    local extra=""
     local pipes=${entry//[^|]/}
 
-    if ((${#pipes} != 3)); then
-        log "Error: Invalid server entry '$entry'. Expected 'NAME|URL|UP_VPNS|DOWN_VPNS'."
+    if ((${#pipes} != 3 && ${#pipes} != 4)); then
+        log "Error: Invalid server entry '$entry'. Expected 'NAME|URL|UP_VPNS|DOWN_VPNS[|EXTRA_ARGS]'."
         return 1
     fi
 
-    IFS='|' read -r out_name out_url out_org_raw out_pers_raw extra <<< "$entry"
+    # read only consumes the first line, so a newline would silently drop the
+    # remainder of the entry (for example part of EXTRA_ARGS); reject newlines
+    # before splitting.
+    if [[ $entry == *$'\n'* ]]; then
+        log "Error: Invalid server entry '$entry'. Server entries cannot contain newlines."
+        return 1
+    fi
+
+    IFS='|' read -r out_name out_url out_org_raw out_pers_raw extra_field extra <<< "$entry"
     out_name=$(trim_ws "$out_name")
     out_url=$(trim_ws "$out_url")
+    extra_field=$(trim_ws "$extra_field")
 
     if [[ -n ${extra:-} || -z $out_name || -z $out_url ]]; then
-        log "Error: Invalid server entry '$entry'. Expected 'NAME|URL|UP_VPNS|DOWN_VPNS'."
+        log "Error: Invalid server entry '$entry'. Expected 'NAME|URL|UP_VPNS|DOWN_VPNS[|EXTRA_ARGS]'."
         return 1
+    fi
+
+    if [[ -z $extra_field && ${#pipes} == 4 ]]; then
+        log "Error: Invalid server entry '$entry'. EXTRA_ARGS cannot be empty; omit the trailing '|' instead."
+        return 1
+    fi
+
+    if [[ -n $extra_field ]] && ! validate_extra_args_field "EXTRA_ARGS" "$extra_field"; then
+        return 1
+    fi
+
+    if (($# >= 6)); then
+        local -n out_extra_raw=$6
+        out_extra_raw=$extra_field
     fi
 
     return 0
@@ -67,6 +93,97 @@ split_list() {
         if [[ -n $trimmed ]]; then
             out+=("$trimmed")
         fi
+    done
+}
+
+# Per-server extra arguments are stored as a single config field with ';'
+# separating individual arguments, so an argument cannot contain ';'.
+split_extra_args() {
+    local raw=$1
+    local -n out=$2
+    local -a parts=()
+    local part
+    local trimmed
+
+    out=()
+    IFS=';' read -r -a parts <<< "$raw"
+    for part in "${parts[@]}"; do
+        trimmed=$(trim_ws "$part")
+        if [[ -n $trimmed ]]; then
+            out+=("$trimmed")
+        fi
+    done
+}
+
+# FreeRDP accepts '/', '-' and '+' as option sigils; normalize them away so
+# reserved options and the domain argument are found in every spelling.
+option_name_from_token() {
+    local token=$1
+
+    case $token in
+        [-/+]*) printf '%s' "${token:1}" ;;
+        *) printf '%s' "$token" ;;
+    esac
+}
+
+validate_extra_args_field() {
+    local label=$1
+    local value=$2
+    local -a tokens=()
+    local token
+    local option
+    local domains=0
+
+    if [[ $value == *"|"* ]]; then
+        log "Error: ${label} cannot contain '|'"
+        return 1
+    fi
+
+    if [[ $value == *$'\n'* ]]; then
+        log "Error: ${label} cannot contain newlines"
+        return 1
+    fi
+
+    split_extra_args "$value" tokens
+
+    if [[ -n $value && ${#tokens[@]} == 0 ]]; then
+        log "Error: ${label} must contain at least one non-empty argument"
+        return 1
+    fi
+
+    for token in "${tokens[@]}"; do
+        # FreeRDP only accepts arguments with a '/', '+' or '-' sigil. A
+        # sigil-less 'd:...' would otherwise be mistaken for a configured
+        # domain and silently replace the one from the credential.
+        if [[ $token != [-/+]* ]]; then
+            log "Error: ${label} arguments must start with '/', '+' or '-': '$token'"
+            return 1
+        fi
+
+        if [[ $token == [-/+]d:* ]]; then
+            domains=$((domains + 1))
+            if ((domains > 1)); then
+                log "Error: ${label} cannot contain more than one /d: argument"
+                return 1
+            fi
+        fi
+
+        option=$(option_name_from_token "$token")
+        if [[ -z $option ]]; then
+            log "Error: ${label} argument '$token' does not name an option"
+            return 1
+        fi
+
+        case $option in
+            v|v:*|u|u:*|p|p:*)
+                log "Error: ${label} cannot contain reserved option '$token'; rdpconn sets the server, username and password itself"
+                return 1
+                ;;
+            d)
+                log "Error: ${label} must use the '/d:<domain>' form instead of '$token'"
+                return 1
+                ;;
+        esac
     done
 }
 
@@ -602,16 +719,23 @@ resolve_monitor_args() {
     local -n args_ref=$2
     local env_var_name=$3
     local monitors_index=-1
+    local monitors_arg=""
     local i
 
+    # FreeRDP accepts '/', '-' and '+' as option sigils, so recognize every
+    # spelling; otherwise a '-monitors:' argument would be passed through
+    # unresolved and would not count towards the duplicate check.
     for i in "${!args_ref[@]}"; do
-        if [[ ${args_ref[i]} == /monitors:* ]]; then
-            if ((monitors_index >= 0)); then
-                log_err "Error: Multiple /monitors arguments are not supported"
-                return 1
-            fi
-            monitors_index=$i
-        fi
+        case ${args_ref[i]} in
+            [-/+]monitors:*)
+                if ((monitors_index >= 0)); then
+                    log_err "Error: Multiple /monitors arguments are not supported"
+                    return 1
+                fi
+                monitors_index=$i
+                monitors_arg=${args_ref[i]}
+                ;;
+        esac
     done
 
     if ((monitors_index < 0)); then
@@ -623,7 +747,7 @@ resolve_monitor_args() {
         return 1
     fi
 
-    local value=${args_ref[monitors_index]#/monitors:}
+    local value=${monitors_arg#[-/+]monitors:}
     local -a tokens=()
     local token
 
@@ -670,7 +794,7 @@ resolve_monitor_args() {
     resolved_ids=${joined%,}
     args_ref[monitors_index]="/monitors:${resolved_ids}"
 
-    log "Resolved '/monitors:${value}' to '/monitors:${resolved_ids}'"
+    log "Resolved '${monitors_arg}' to '/monitors:${resolved_ids}'"
 }
 
 is_freerdp_client() {
@@ -759,16 +883,40 @@ start_rdp_session() {
     local username=$4
     local password=$5
     local domain=$6
+    local extra_raw=${7:-}
 
     local -a args=()
+    local -a extra_args=()
+    local arg
+    local have_domain=0
+
     build_rdp_args "$client" "$display_mode" args
+    split_extra_args "$extra_raw" extra_args
+    args+=("${extra_args[@]}")
+
+    # A configured domain wins over the one from the credential. Every
+    # accepted spelling is counted so a duplicate aborts instead of winning.
+    for arg in "${args[@]}"; do
+        case $arg in
+            [-/+]d:*)
+                if ((have_domain)); then
+                    log_err "Error: Multiple /d: arguments are not supported"
+                    return 1
+                fi
+                have_domain=1
+                ;;
+        esac
+    done
 
     args+=(
         "/v:${server}"
         "/u:${username}"
         "/p:${password}"
-        "/d:${domain}"
     )
+
+    if ((have_domain == 0)); then
+        args+=("/d:${domain}")
+    fi
 
     local share="${RDP_SHARE:-}"
     if [[ -n $share ]]; then
@@ -808,6 +956,7 @@ launch_with_fallback() {
     local password=$4
     local domain=$5
     local clients_var=$6
+    local extra_raw=${7:-}
     local -n clients=$clients_var
     local i
     local client
@@ -818,7 +967,7 @@ launch_with_fallback() {
         client=${clients[$i]}
         RDP_FAILURE_DETAIL=""
         log "Using RDP client '${client}' on display mode '${display_mode}'"
-        if start_rdp_session "$client" "$display_mode" "$server" "$username" "$password" "$domain"; then
+        if start_rdp_session "$client" "$display_mode" "$server" "$username" "$password" "$domain" "$extra_raw"; then
             return 0
         else
             status=$?
@@ -877,8 +1026,13 @@ server_entry() {
     local url=$2
     local up=$3
     local down=$4
+    local extra=${5:-}
 
-    printf '%s|%s|%s|%s' "$name" "$url" "$up" "$down"
+    if [[ -n $extra ]]; then
+        printf '%s|%s|%s|%s|%s' "$name" "$url" "$up" "$down" "$extra"
+    else
+        printf '%s|%s|%s|%s' "$name" "$url" "$up" "$down"
+    fi
 }
 
 validate_server_field() {
@@ -1209,20 +1363,26 @@ print_server_list() {
     local url
     local org_raw
     local pers_raw
+    local extra_raw
     local status
+    local line
     local i=1
 
     for entry in "${SERVERS[@]}"; do
-        parse_server_entry "$entry" name url org_raw pers_raw || return 1
+        parse_server_entry "$entry" name url org_raw pers_raw extra_raw || return 1
         if kwallet_has_entry "$url"; then
             status="present"
         else
             status="missing"
         fi
+        line="${i}) ${name} (${url}) credential: ${status} up: ${org_raw} down: ${pers_raw}"
+        if [[ -n $extra_raw ]]; then
+            line+=" args: ${extra_raw}"
+        fi
         if [[ $stream == "stderr" ]]; then
-            log_err "${i}) ${name} (${url}) credential: ${status} up: ${org_raw} down: ${pers_raw}"
+            log_err "$line"
         else
-            log "${i}) ${name} (${url}) credential: ${status} up: ${org_raw} down: ${pers_raw}"
+            log "$line"
         fi
         ((i++))
     done
@@ -1263,6 +1423,7 @@ edit_add_server() {
     local url
     local up
     local down
+    local extra
     local set_cred
     local -a new_servers=("${SERVERS[@]}")
 
@@ -1270,23 +1431,29 @@ edit_add_server() {
     read -r -p "URL: " url
     read -r -p "UP_VPNS [*]: " up
     read -r -p "DOWN_VPNS [*]: " down
+    read -r -p "Extra RDP args [none]: " extra
 
     name=$(trim_ws "$name")
     url=$(trim_ws "$url")
     up=$(normalize_vpn_field "$up")
     down=$(normalize_vpn_field "$down")
+    extra=$(trim_ws "$extra")
+    if [[ $extra == "-" ]]; then
+        extra=""
+    fi
 
     validate_server_field "Name" "$name" || return 1
     validate_server_field "URL" "$url" || return 1
     validate_vpn_field "UP_VPNS" "$up" || return 1
     validate_vpn_field "DOWN_VPNS" "$down" || return 1
+    validate_extra_args_field "EXTRA_ARGS" "$extra" || return 1
 
     if server_url_exists_except "$url" "-1"; then
         log "Error: Server URL '$url' already exists"
         return 1
     fi
 
-    new_servers+=("$(server_entry "$name" "$url" "$up" "$down")")
+    new_servers+=("$(server_entry "$name" "$url" "$up" "$down" "$extra")")
     write_servers_config new_servers || return 1
     log "Added server '$name ($url)'"
 
@@ -1303,37 +1470,45 @@ edit_update_server() {
     local old_url
     local old_up
     local old_down
+    local old_extra
     local name
     local url
     local up
     local down
+    local extra
     local -a new_servers=("${SERVERS[@]}")
 
     index=$(select_server_index) || return 1
     entry=${SERVERS[$index]}
-    parse_server_entry "$entry" old_name old_url old_up old_down || return 1
+    parse_server_entry "$entry" old_name old_url old_up old_down old_extra || return 1
 
     read -r -p "Name [$old_name]: " name
     read -r -p "URL [$old_url]: " url
     read -r -p "UP_VPNS [$old_up]: " up
     read -r -p "DOWN_VPNS [$old_down]: " down
+    read -r -p "Extra RDP args [${old_extra:-none}] ('-' clears): " extra
 
     name=$(trim_ws "${name:-$old_name}")
     url=$(trim_ws "${url:-$old_url}")
     up=$(trim_ws "${up:-$old_up}")
     down=$(trim_ws "${down:-$old_down}")
+    extra=$(trim_ws "${extra:-$old_extra}")
+    if [[ $extra == "-" ]]; then
+        extra=""
+    fi
 
     validate_server_field "Name" "$name" || return 1
     validate_server_field "URL" "$url" || return 1
     validate_vpn_field "UP_VPNS" "$up" || return 1
     validate_vpn_field "DOWN_VPNS" "$down" || return 1
+    validate_extra_args_field "EXTRA_ARGS" "$extra" || return 1
 
     if server_url_exists_except "$url" "$index"; then
         log "Error: Server URL '$url' already exists"
         return 1
     fi
 
-    new_servers[$index]="$(server_entry "$name" "$url" "$up" "$down")"
+    new_servers[$index]="$(server_entry "$name" "$url" "$up" "$down" "$extra")"
     write_servers_config new_servers || return 1
     log "Updated server '$name ($url)'"
 }
@@ -1538,10 +1713,11 @@ main() {
     local server_url
     local org_raw
     local pers_raw
+    local extra_raw
     while true; do
         if ((${#SERVERS[@]} == 1)); then
             server_entry=${SERVERS[0]}
-            if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw; then
+            if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw extra_raw; then
                 exit 1
             fi
             log "Auto-selecting: '${server_name} (${server_url})'"
@@ -1567,7 +1743,7 @@ main() {
             fi
             exit "$edit_status"
         fi
-        if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw; then
+        if ! parse_server_entry "$server_entry" server_name server_url org_raw pers_raw extra_raw; then
             exit 1
         fi
         break
@@ -1590,7 +1766,7 @@ main() {
         exit 1
     fi
 
-    launch_with_fallback "$display_mode" "$server_url" "$SERVER_USERNAME" "$SERVER_PASSWORD" "$SERVER_DOMAIN" rdp_clients
+    launch_with_fallback "$display_mode" "$server_url" "$SERVER_USERNAME" "$SERVER_PASSWORD" "$SERVER_DOMAIN" rdp_clients "$extra_raw"
 }
 
 main "$@"
